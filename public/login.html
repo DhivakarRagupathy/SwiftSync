@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SwiftSync - Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 flex items-center justify-center min-h-screen">
+    <div class="bg-white p-8 rounded border border-slate-200 shadow-sm max-w-md w-full">
+        <h1 class="text-xl font-bold text-slate-800 tracking-tight">SwiftSync Gateway</h1>
+        <p class="text-xs text-slate-400 mt-1">Automated Tally Bookkeeping Extraction Engine</p>
+        
+        <form id="login-form" class="mt-6 space-y-4">
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">Username</label>
+                <input type="text" id="username" required class="w-full border border-slate-200 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">Password</label>
+                <input type="password" id="password" required class="w-full border border-slate-200 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400">
+            </div>
+            <div id="error-banner" class="text-xs font-medium text-rose-500 hidden"></div>
+            <button type="submit" class="w-full bg-slate-900 text-white text-sm font-medium py-2 rounded.5 hover:bg-slate-800 transition-colors">
+                Sign In
+            </button>
+        </form>
+    </div>
+
+    <script>
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const errorBanner = document.getElementById('error-banner');
+            errorBanner.classList.add('hidden');
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    window.location.href = '/';
+                } else {
+                    errorBanner.innerText = data.error || "Authentication verification aborted.";
+                    errorBanner.classList.remove('hidden');
+                }
+            } catch (err) {
+                errorBanner.innerText = "Network transmission failure.";
+                errorBanner.classList.remove('hidden');
+            }
+        });
+    </script>
+</body>
+</html>
