@@ -1,53 +1,69 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SwiftSync Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
+
 <body class="bg-slate-50 min-h-screen font-sans p-6">
 
     <div class="max-w-6xl mx-auto">
         <div class="flex justify-between items-center mb-8 border-b border-slate-200 pb-5">
             <div>
                 <h1 class="text-2xl font-bold text-slate-900 tracking-tight">SwiftSync Platform Dashboard</h1>
-                <p class="text-sm text-slate-500 mt-1">Client ID: <span id="client-id-tag">c0000000-0000-0000-0000-000000000000</span></p>
+                <p class="text-sm text-slate-500 mt-1">Client ID: <span
+                        id="client-id-tag">c0000000-0000-0000-0000-000000000000</span></p>
             </div>
-            <button onclick="exportTally()" class="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded font-medium text-sm transition-colors">
-                Export Tally Vouchers (.CSV)
-            </button>
+            <div class="flex items-center">
+                <button id="btn-json-export" onclick="exportBatchJson()"
+                    class="hidden bg-slate-100 hover:bg-slate-200 text-slate-800 px-4 py-2 rounded font-medium text-sm transition-colors border border-slate-200 mr-2">
+                    Export Batch (.JSON)
+                </button>
+
+                <button onclick="exportTally()"
+                    class="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded font-medium text-sm transition-colors">
+                    Export Tally Vouchers (.CSV)
+                </button>
+            </div>
+
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
-    <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Total Invoices</span>
-        <span id="metric-count" class="text-2xl font-bold text-slate-800 mt-1 block">0</span>
-    </div>
-    <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Gross Billing</span>
-        <span id="metric-billing" class="text-2xl font-bold text-emerald-600 mt-1 block">₹0</span>
-    </div>
-    <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Partner Share</span>
-        <span id="metric-commission" class="text-2xl font-bold text-blue-600 mt-1 block">₹0</span>
-    </div>
-    <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Claude API Cost</span>
-        <span id="metric-infra" class="text-2xl font-bold text-rose-600 mt-1 block">₹0</span>
-    </div>
-    <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
-        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Net Take-Home Profit</span>
-        <span id="metric-profit" class="text-2xl font-bold text-slate-900 mt-1 block">₹0</span>
-    </div>
-</div>
+            <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Total Invoices</span>
+                <span id="metric-count" class="text-2xl font-bold text-slate-800 mt-1 block">0</span>
+            </div>
+            <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Gross Billing</span>
+                <span id="metric-billing" class="text-2xl font-bold text-emerald-600 mt-1 block">₹0</span>
+            </div>
+            <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Partner Share</span>
+                <span id="metric-commission" class="text-2xl font-bold text-blue-600 mt-1 block">₹0</span>
+            </div>
+            <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Claude API Cost</span>
+                <span id="metric-infra" class="text-2xl font-bold text-rose-600 mt-1 block">₹0</span>
+            </div>
+            <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Net Take-Home
+                    Profit</span>
+                <span id="metric-profit" class="text-2xl font-bold text-slate-900 mt-1 block">₹0</span>
+            </div>
+        </div>
 
         <div class="bg-white p-6 rounded border border-slate-200 shadow-sm">
             <h2 class="text-lg font-semibold text-slate-800 mb-4">Ingest Document Batch</h2>
-            <div class="border-2 border-dashed border-slate-200 rounded-lg p-8 text-center bg-slate-50 hover:bg-slate-100 transition-colors relative">
-                <input type="file" id="file-input" onchange="handleUpload(event)" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+            <div
+                class="border-2 border-dashed border-slate-200 rounded-lg p-8 text-center bg-slate-50 hover:bg-slate-100 transition-colors relative">
+                <input type="file" id="file-input" onchange="handleUpload(event)"
+                    class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
                 <div class="space-y-2">
-                    <p id="upload-prompt" class="text-sm font-medium text-slate-700">Drag and drop files here, or click to browse</p>
+                    <p id="upload-prompt" class="text-sm font-medium text-slate-700">Drag and drop files here, or click
+                        to browse</p>
                     <p class="text-xs text-slate-400">Supports JPEG, PNG, and PDF document formats</p>
                 </div>
             </div>
@@ -55,107 +71,128 @@
         </div>
     </div>
 
-  <script>
-    const auditorId = "a0000000-0000-0000-0000-000000000000";
-    const clientId = "c0000000-0000-0000-0000-000000000000";
+    <script>
+        const auditorId = "a0000000-0000-0000-0000-000000000000";
+        const clientId = "c0000000-0000-0000-0000-000000000000";
 
-    // Enable multiple selection on the raw file input when the DOM loads
-    document.getElementById('file-input').setAttribute('multiple', 'true');
+        // Enable multiple selection on the raw file input when the DOM loads
+        document.getElementById('file-input').setAttribute('multiple', 'true');
 
-    async function loadMetrics() {
-        try {
-            const res = await fetch(`/api/dashboard/metrics?auditorId=${auditorId}`);
-            const data = await res.json();
-            if (res.ok) {
-                document.getElementById('metric-count').innerText = data.summary.total_invoices_processed;
-                document.getElementById('metric-billing').innerText = '₹' + data.summary.gross_billing_inr;
-                document.getElementById('metric-commission').innerText = '₹' + data.summary.partner_payout_inr;
-                document.getElementById('metric-infra').innerText = '₹' + data.summary.claude_api_cost_inr;
-                document.getElementById('metric-profit').innerText = '₹' + data.summary.net_take_home_profit_inr;
+        async function loadMetrics() {
+            try {
+                const res = await fetch(`/api/dashboard/metrics?auditorId=${auditorId}`);
+                const data = await res.json();
+                if (res.ok) {
+                    document.getElementById('metric-count').innerText = data.summary.total_invoices_processed;
+                    document.getElementById('metric-billing').innerText = '₹' + data.summary.gross_billing_inr;
+                    document.getElementById('metric-commission').innerText = '₹' + data.summary.partner_payout_inr;
+                    document.getElementById('metric-infra').innerText = '₹' + data.summary.claude_api_cost_inr;
+                    document.getElementById('metric-profit').innerText = '₹' + data.summary.net_take_home_profit_inr;
+                }
+            } catch (err) {
+                console.error("Metrics fetch error:", err);
             }
-        } catch (err) {
-            console.error("Metrics fetch error:", err);
         }
-    }
 
-    // Process a full batch concurrently
-    async function handleUpload(event) {
-        const files = Array.from(event.target.files);
-        if (files.length === 0) return;
+        function exportTally() {
+            window.open(`/api/export/tally?clientId=${clientId}`, '_blank');
+        }
 
-        const statusBox = document.getElementById('status-box');
-        statusBox.classList.remove('hidden');
-        statusBox.innerHTML = `<div>🚀 Batch Processing Started for ${files.length} files...</div>`;
+        let currentBatchInvoiceIds = []; // Session tracking array variable
 
-        try {
-            // Step 1: Bulk initiate and pull signed URLs for the entire folder
-            statusBox.innerHTML += `<div class="text-slate-400">Step 1: Requesting batch allocation tokens from server...</div>`;
-            const fileNames = files.map(f => f.name);
-            
-            const initRes = await fetch('/api/upload/bulk-initiate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ files: fileNames, clientId })
-            });
-            const initData = await initRes.json();
-            if (!initRes.ok) throw new Error(initData.error);
+        async function handleUpload(event) {
+            const files = Array.from(event.target.files);
+            if (files.length === 0) return;
 
-            statusBox.innerHTML += `<div class="text-slate-400">Step 2: Streaming binaries directly to cloud storage concurrently...</div>`;
+            // Reset old state tracking contexts
+            currentBatchInvoiceIds = [];
+            document.getElementById('btn-json-export').classList.add('hidden');
 
-            // Step 2: Map over the manifest and run uploads in parallel
-            const uploadPromises = initData.batch.map(async (item) => {
-                if (item.status === 'error') {
-                    statusBox.innerHTML += `<div class="text-rose-400">❌ Failed token clearance for ${item.fileName}: ${item.error}</div>`;
+            const statusBox = document.getElementById('status-box');
+            statusBox.classList.remove('hidden');
+            statusBox.innerHTML = `<div>🚀 Batch Processing Started for ${files.length} files...</div>`;
+
+            try {
+                const fileNames = files.map(f => f.name);
+                const initRes = await fetch('/api/upload/bulk-initiate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ files: fileNames, clientId })
+                });
+                const initData = await initRes.json();
+
+                const uploadPromises = initData.batch.map(async (item) => {
+                    if (item.status === 'error') return;
+
+                    // Capture the invoice ID generated during this current batch execution pass
+                    currentBatchInvoiceIds.push(item.invoiceId);
+
+                    const localFile = files.find(f => f.name === item.fileName);
+                    await fetch(item.uploadUrl, {
+                        method: 'PUT',
+                        headers: { 'Authorization': `Bearer ${item.token}`, 'Content-Type': localFile.type },
+                        body: localFile
+                    });
+
+                    const compRes = await fetch('/api/upload/complete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ invoiceId: item.invoiceId, clientId, storagePath: item.storagePath })
+                    });
+                    const compData = await compRes.json();
+                    statusBox.innerHTML += `<div class="text-emerald-400">✔ Queued: ${item.fileName}</div>`;
+                });
+
+                await Promise.all(uploadPromises);
+                statusBox.innerHTML += `<div class="text-white font-bold mt-2">🏁 Ingestion finished. Background operations running.</div>`;
+
+                // Reveal the context-isolated export button once the configuration payload settles
+                document.getElementById('btn-json-export').classList.remove('hidden');
+
+            } catch (err) {
+                statusBox.innerHTML += `<div class="text-rose-500 font-bold">❌ Error: ${err.message}</div>`;
+            }
+        }
+
+        // Triggers client-side browser file reconstruction from streaming blob content
+        async function exportBatchJson() {
+            if (currentBatchInvoiceIds.length === 0) {
+                alert("No transaction batch context active in current UI memory loop.");
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/export/json-batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ invoiceIds: currentBatchInvoiceIds })
+                });
+
+                if (!res.ok) {
+                    const errData = await res.json();
+                    alert(errData.error || "JSON compilation request rejected.");
                     return;
                 }
 
-                // Find the corresponding local file object by name
-                const localFile = files.find(f => f.name === item.fileName);
-                
-                // Stream binary payload straight to storage bucket
-                await fetch(item.uploadUrl, {
-                    method: 'PUT',
-                    headers: {
-                        'Authorization': `Bearer ${item.token}`,
-                        'Content-Type': localFile.type
-                    },
-                    body: localFile
-                });
+                const rawBlob = await res.blob();
+                const clientDownloadUrl = window.URL.createObjectURL(rawBlob);
 
-                // Step 3: Notify server backend to append file into BullMQ job queues
-                const compRes = await fetch('/api/upload/complete', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        invoiceId: item.invoiceId,
-                        clientId,
-                        storagePath: item.storagePath
-                    })
-                });
-                const compData = await compRes.json();
-                
-                statusBox.innerHTML += `<div class="text-emerald-400">✔ Queued: ${item.fileName} -> Job #${compData.jobId}</div>`;
-            });
+                const virtualAnchor = document.createElement('a');
+                virtualAnchor.href = clientDownloadUrl;
+                virtualAnchor.download = `SwiftSync_Batch_${Date.now()}.json`;
+                document.body.appendChild(virtualAnchor);
+                virtualAnchor.click();
 
-            // Await all parallel uploads to complete execution
-            await Promise.all(uploadPromises);
-            statusBox.innerHTML += `<div class="text-white font-bold mt-2">🏁 Entire batch successfully ingested! Background workers are processing.</div>`;
-            
-            // Clean up status display window after a delay
-            setTimeout(() => { statusBox.classList.add('hidden'); }, 8000);
-            setTimeout(() => { loadMetrics(); }, 3000); // Give the worker a moment to process before refreshing metrics
-
-        } catch (err) {
-            statusBox.innerHTML += `<div class="text-rose-500 font-bold">❌ Critical Ingestion Interruption: ${err.message}</div>`;
+                virtualAnchor.remove();
+                window.URL.revokeObjectURL(clientDownloadUrl);
+            } catch (err) {
+                console.error("Batch JSON transmission crash:", err);
+            }
         }
-    }
 
-    function exportTally() {
-        window.open(`/api/export/tally?clientId=${clientId}`, '_blank');
-    }
-
-    loadMetrics();
-</script>
+        loadMetrics();
+    </script>
 
 </body>
+
 </html>

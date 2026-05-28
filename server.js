@@ -279,6 +279,56 @@ app.post('/api/upload/bulk-initiate', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/export/json-batch
+ * Compiles and downloads a clean JSON file containing ONLY the current active batch records
+ */
+app.post('/api/export/json-batch', async (req, res) => {
+  const { invoiceIds } = req.body;
+
+  if (!invoiceIds || !Array.isArray(invoiceIds) || invoiceIds.length === 0) {
+    return res.status(400).json({ error: "No active execution context found. Provide target invoiceIds." });
+  }
+
+  try {
+    // Select only rows matching our current batch session identifiers
+    const { data: invoices, error } = await supabase
+      .from('invoices')
+      .select('id, status, storage_path, extracted_data')
+      .in('id', invoiceIds);
+
+    if (error) throw error;
+
+    if (!invoices || invoices.length === 0) {
+      return res.status(444).json({ error: "No transaction records found for this active batch framework." });
+    }
+
+    // Structure a clean metadata response object
+    const exportBundle = {
+      exported_at: new Date().toISOString(),
+      batch_summary: {
+        total_items_submitted: invoices.length,
+        processed_successfully: invoices.filter(i => i.status === 'COMPLETED').length,
+        failed_or_pending: invoices.filter(i => i.status !== 'COMPLETED').length
+      },
+      transactions: invoices.map(inv => ({
+        invoice_uuid: inv.id,
+        processing_status: inv.status,
+        original_file: inv.storage_path ? inv.storage_path.split('/').pop() : 'unknown',
+        extracted_accounting_payload: inv.extracted_data
+      }))
+    };
+
+    // Set headers to trigger an immediate browser file attachment stream
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=SwiftSync_Batch_${Date.now()}.json`);
+    res.status(200).send(JSON.stringify(exportBundle, null, 2));
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🚀 API Server active at http://localhost:${PORT}`);
 });
