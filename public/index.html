@@ -14,8 +14,7 @@
         <div class="flex justify-between items-center mb-8 border-b border-slate-200 pb-5">
             <div>
                 <h1 class="text-2xl font-bold text-slate-900 tracking-tight">SwiftSync Platform Dashboard</h1>
-                <p class="text-sm text-slate-500 mt-1">Client ID: <span
-                        id="client-id-tag">c0000000-0000-0000-0000-000000000000</span></p>
+        
             </div>
             <div class="flex items-center">
                 <button id="btn-json-export" onclick="exportBatchJson()"
@@ -31,7 +30,7 @@
 
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+        <div id="admin-metrics" class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8 hidden">
             <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
                 <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Total Invoices</span>
                 <span id="metric-count" class="text-2xl font-bold text-slate-800 mt-1 block">0</span>
@@ -55,6 +54,19 @@
             </div>
         </div>
 
+        <div id="user-quota" class="bg-white p-6 rounded border border-slate-200 shadow-sm mb-8 hidden">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-lg font-semibold text-slate-800">Your Invoice Quota</h2>
+                    <p class="text-sm text-slate-500 mt-1">You have the following allocations remaining</p>
+                </div>
+                <div class="text-right">
+                    <span class="text-4xl font-bold text-blue-600" id="invoices-left-display">0</span>
+                    <p class="text-sm text-slate-500 mt-2">Invoices Left</p>
+                </div>
+            </div>
+        </div>
+
         <div class="bg-white p-6 rounded border border-slate-200 shadow-sm">
             <h2 class="text-lg font-semibold text-slate-800 mb-4">Ingest Document Batch</h2>
             <div
@@ -74,9 +86,27 @@
     <script>
         const auditorId = "a0000000-0000-0000-0000-000000000000";
         const clientId = "c0000000-0000-0000-0000-000000000000";
+        const currentUsername = localStorage.getItem('currentUsername') || 'guest';
+        const userInvoicesLeft = parseInt(localStorage.getItem('userInvoicesLeft')) || 0;
+        const isAdmin = localStorage.getItem('isAdmin') === 'true';
 
         // Enable multiple selection on the raw file input when the DOM loads
         document.getElementById('file-input').setAttribute('multiple', 'true');
+
+        // Initialize dashboard display based on user role
+        function initializeDashboard() {
+            if (isAdmin) {
+                // Show admin metrics
+                document.getElementById('admin-metrics').classList.remove('hidden');
+                document.getElementById('user-quota').classList.add('hidden');
+                loadMetrics();
+            } else {
+                // Show user quota
+                document.getElementById('admin-metrics').classList.add('hidden');
+                document.getElementById('user-quota').classList.remove('hidden');
+                document.getElementById('invoices-left-display').innerText = userInvoicesLeft;
+            }
+        }
 
         async function loadMetrics() {
             try {
@@ -91,6 +121,21 @@
                 }
             } catch (err) {
                 console.error("Metrics fetch error:", err);
+            }
+        }
+
+        async function refreshUserQuota() {
+            try {
+                const res = await fetch(`/api/user/quota?username=${currentUsername}`);
+                const data = await res.json();
+                if (res.ok) {
+                    userInvoicesLeft = data.invoices_left;
+                    localStorage.setItem('userInvoicesLeft', userInvoicesLeft);
+                    document.getElementById('invoices-left-display').innerText = userInvoicesLeft;
+                    console.log(`✅ Quota refreshed: ${userInvoicesLeft} invoices left`);
+                }
+            } catch (err) {
+                console.error("Quota refresh error:", err);
             }
         }
 
@@ -128,14 +173,19 @@
                 const initRes = await fetch('/api/upload/bulk-initiate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ files: fileNames, clientId })
+                    body: JSON.stringify({ files: fileNames, username: currentUsername })
                 });
                 const initData = await initRes.json();
+
+                if (!initRes.ok) {
+                    const errorData = await initRes.json();
+                    throw new Error(errorData.message || errorData.error || "Upload initiation failed");
+                }
 
                 const uploadPromises = initData.batch.map(async (item) => {
                     if (item.status === 'error') return;
 
-                    // Capture the invoice ID generated during this current batch execution pass
+                    // Capture the invoice ID and appUserId for quota tracking
                     currentBatchInvoiceIds.push(item.invoiceId);
 
                     const localFile = optimizedFiles.find(f => f.name === item.fileName);
@@ -160,10 +210,6 @@
 
                 // Poll the backend to check if processing is complete
                 await waitForProcessingComplete(currentBatchInvoiceIds, statusBox);
-
-                // Only reveal export button when processing is actually done
-                document.getElementById('btn-json-export').classList.remove('hidden');
-                statusBox.innerHTML += `<div class="text-emerald-400 font-bold mt-2">✨ Processing complete! Export button is now enabled.</div>`;
 
             } catch (err) {
                 statusBox.innerHTML += `<div class="text-rose-500 font-bold">❌ Error: ${err.message}</div>`;
@@ -196,6 +242,16 @@
                         const failed = data.invoices.filter(inv => inv.status === 'FAILED').length;
                         console.log(`✅ Processing complete: ${completed} succeeded, ${failed} failed`);
                         statusBox.innerHTML += `<div class="text-slate-300">📊 ${completed}/${invoiceIds.length} invoices processed successfully</div>`;
+                        
+                        // Refresh user quota if not admin
+                        if (!isAdmin) {
+                            await refreshUserQuota();
+                        }
+                        
+                        // Reveal export button
+                        document.getElementById('btn-json-export').classList.remove('hidden');
+                        statusBox.innerHTML += `<div class="text-emerald-400 font-bold mt-2">✨ Processing complete! Export button is now enabled.</div>`;
+                        
                         return; // Processing done!
                     }
 
@@ -394,7 +450,7 @@
             });
         }
 
-        loadMetrics();
+        initializeDashboard();
     </script>
 
 </body>

@@ -45,6 +45,10 @@
                 const data = await res.json();
 
                 if (res.ok && data.success) {
+                    // Store username for dashboard to use
+                    localStorage.setItem('currentUsername', data.user.username);
+                    localStorage.setItem('userInvoicesLeft', data.user.invoices_left);
+                    localStorage.setItem('isAdmin', data.user.is_admin);
                     window.location.href = '/';
                 } else {
                     errorBanner.innerText = data.error || "Authentication verification aborted.";

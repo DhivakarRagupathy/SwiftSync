@@ -54,7 +54,7 @@ function extractAndParseJSON(rawText) {
  * Core Core Job Processing Loop
  */
 async function processInvoiceJob(job) {
-  const { invoiceId, clientId, storagePath } = job.data;
+  const { invoiceId, clientId, storagePath, appUserId } = job.data;
   console.log(`\n[Processing] 📥 Job ${job.id} picked up for Invoice UUID: ${invoiceId}`);
 
   try {
@@ -158,7 +158,22 @@ EXPECTED JSON SCHEMA:
 
     if (updateError) throw new Error(`Database record mutation failed: updateError.message`);
 
-    // 6. Safe Infrastructure Usage Logs Sync 
+    // 6. Decrement user's invoice quota after successful processing
+    if (appUserId) {
+      const { error: decrementError } = await supabase
+        .from('app_users')
+        .update({ invoices_left: supabase.raw('invoices_left - 1') })
+        .eq('id', appUserId)
+        .gt('invoices_left', 0); // Only decrement if balance > 0
+
+      if (decrementError) {
+        console.warn(`⚠️ Quota decrement failed for user ${appUserId}:`, decrementError.message);
+      } else {
+        console.log(`✅ Quota decremented for user ${appUserId}`);
+      }
+    }
+
+    // 7. Safe Infrastructure Usage Logs Sync 
     // Uses a separate block so if the log table doesn't exist, it won't crash the main booking pipeline
     try {
       await supabase.from('usage_logs').insert({
