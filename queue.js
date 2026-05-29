@@ -1,183 +1,177 @@
-import { Queue, Worker } from 'bullmq';
-import Anthropic from '@anthropic-ai/sdk';
-import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
+import { createClient } from '@supabase/supabase-js';
+import Anthropic from '@anthropic-ai/sdk';
+import { Worker , Queue} from 'bullmq';
+import IORedis from 'ioredis';
+import dotenv from 'dotenv';
 
-const redisOptions = { host: "127.0.0.1", port: 6379 };
-const supabase = createClient("https://bbdyfhaspzrgmiatbrut.supabase.co", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJiZHlmaGFzcHpyZ21pYXRicnV0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTg3MjQ1MiwiZXhwIjoyMDk1NDQ4NDUyfQ.jtWTlgnrV8Ll0jo7JqeQa0XqGn18AATVhKKrqwI67CE");
+// Load environment configurations
+dotenv.config({ path: './local.env' }); // Adjust file matching to your setup (.env or local.env)
 
-// Fallback initialization if key is absent
-const anthropic = process.env.ANTHROPIC_API_KEY
-  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  : null;
+// Initialize Core External Clients
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-export const invoiceQueue = new Queue('InvoiceProcessingQueue', { connection: redisOptions });
+// Dynamic Redis Network Binding
+const redisConnection = new IORedis(process.env.REDIS_URL || {
+  host: '127.0.0.1',
+  port: 6379,
+  maxRetriesPerRequest: null
+});
 
-// A helper function simulating Claude's vision processing and ledger normalization
-async function mockClaudeVisionExtraction(ledgerString) {
-  // Simulate 3 seconds of network/vision latency
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-
-  // Extract names from our string to pass back an accurate matching ledger string
-  const ledgersArray = ledgerString.split(',').map(l => l.trim().split(' ')[0]);
-  const matchedExpenseLedger = ledgersArray[0] || "Office Stationery Expenses";
-
-  return {
-    extractionResult: {
-      date: "27-05-2026",
-      voucher_type: "Purchase",
-      voucher_no: `INV-2026-${Math.floor(1000 + Math.random() * 9000)}`,
-      party_ledger: "Sri Lakshmi Traders",
-      expense_ledger: matchedExpenseLedger,
-      amount: parseFloat((Math.random() * 5000 + 500).toFixed(2)),
-      narration: "Automated extraction: Office consumables and processing supplies."
-    },
-    usage: {
-      input_tokens: 1540,
-      output_tokens: 210,
-      cache_read_tokens: 1120 // Simulates active prompt caching behavior
-    }
-  };
-}
-
-const worker = new Worker('InvoiceProcessingQueue', async (job) => {
+/**
+ * Core Core Job Processing Loop
+ */
+async function processInvoiceJob(job) {
   const { invoiceId, clientId, storagePath } = job.data;
-  console.log(`[Processing] Worker picked up job ${job.id} for Invoice: ${invoiceId}`);
+  console.log(`\n[Processing] 📥 Job ${job.id} picked up for Invoice UUID: ${invoiceId}`);
 
   try {
-    // 1. Fetch exact Tally ledger names specific to this specific client
-    // Note: If your local DB is empty, default string handling prevents an app crash
-    const { data: ledgers, error } = await supabase
+    // 1. Fetch Tenant Chart of Accounts (Ledgers)
+    const { data: ledgers, error: ledgerError } = await supabase
       .from('tally_ledgers')
       .select('ledger_name, group_context')
       .eq('client_id', clientId);
 
-    const ledgerString = (ledgers && ledgers.length > 0)
-      ? ledgers.map(l => `${l.ledger_name} (${l.group_context})`).join(', ')
-      : "Printing & Stationery (Direct Expenses)";
+    if (ledgerError) throw new Error(`Failed to fetch ledgers: ${ledgerError.message}`);
 
-    let extractionResult;
-    let usageMetrics;
+    const ledgerString = ledgers
+      .map(l => `Name: "${l.ledger_name}", Group: "${l.group_context || 'None'}"`)
+      .join('\n');
 
-    // 2. Core Routing Workaround
-    if (anthropic) {
-      // 1. Direct live API Execution
-      const { data: fileBuffer, error: downloadError } = await supabase.storage.from('invoices').download(storagePath);
-      if (downloadError) throw downloadError;
+    // 2. Stream Binary File straight from Cloud Bucket
+    const { data: fileBuffer, error: downloadError } = await supabase.storage
+      .from('invoices')
+      .download(storagePath);
 
-      const base64Image = Buffer.from(await fileBuffer.arrayBuffer()).toString('base64');
+    if (downloadError) throw new Error(`Storage download failure: ${downloadError.message}`);
 
-      // Determine media type dynamically based on file extension
-      const extension = storagePath.split('.').pop().toLowerCase();
-      let mediaType = 'image/jpeg';
-      if (extension === 'png') mediaType = 'image/png';
-      if (extension === 'pdf') mediaType = 'application/pdf'; // Note: Ensure model compatibility for PDF binaries
+    // Encode payload values for Anthropic multi-modal consumption
+    const base64Image = Buffer.from(await fileBuffer.arrayBuffer()).toString('base64');
+    const extension = storagePath.split('.').pop().toLowerCase();
+    const mediaType = extension === 'png' ? 'image/png' : 'image/jpeg';
 
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-       system: [{ 
-  type: "text", 
-  text: `You are a strict, automated bookkeeping extraction engine configured for advanced Tally multi-ledger inventory tracking. Your job is to parse the invoice image and output an itemized ledger matrix.
+    console.log(`[Live API] 🧠 Dispatching image to Claude (claude-sonnet-4-6)...`);
+
+    // 3. Execute Live Model Vision Parsing
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 2500, // Large ceiling allowance for complex invoices containing dozens of lines
+      system: [{ 
+        type: "text", 
+        text: `You are a literal, deterministic data extraction engine for Tally ERP. You must never invent, hallucinate, or use example names.
+
+STRICT DATA SOURCE BINDING RULES:
+1. **ledger_1_name (Party Ledger)**: Look at the actual invoice image. Extract the exact name of the Vendor/Supplier company printed on the document. Do not use placeholder names.
+2. **ledger_2_name (Expense/Purchase Ledger)**: You must choose a name strictly from the "VALID TALLY LEDGERS FOR THIS CLIENT" list below. If the list is empty or no match fits, output "Purchase A/c". Never invent a name.
+3. **ledger_3_name (Tax Ledger)**: Extract the tax ledger name visible on the invoice. If none is present, leave it empty.
 
 VALID TALLY LEDGERS FOR THIS CLIENT:
-[${ledgerString}]
+[${ledgerString || 'Purchase A/c'}]
 
-EXTRACTION & MAPPING RULES:
-1. **Voucher Date**: Extract the invoice date. Convert strictly to 'DD-MM-YYYY' format.
-2. **Voucher Type Name**: Output 'Purchase' for vendor bills, or 'Payment' for cash receipts.
-3. **Voucher Number**: Extract the exact reference/invoice number.
-4. **Buyer/Supplier - Address**: Extract the complete physical address of the supplier cleanly.
-5. **Ledger Mapping Sequence**:
-   - **Ledger 1**: Must be the Sundry Creditor/Supplier Party Account. Amount is the grand total (Gross). Dr/Cr status is 'Cr'.
-   - **Ledger 2**: Must be the core Expense or Purchase head (select the closest match from the VALID LEDGERS list). Amount is the taxable value (Net before tax). Dr/Cr status is 'Dr'.
-   - **Ledger 3**: Extract the tax ledger name if applicable (e.g., "CGST & SGST" or "Input IGST"). Amount is the accumulated tax value. Dr/Cr status is 'Dr'. If no tax ledger is visible, leave name empty, amount 0, and Dr/Cr blank.
-6. **Inventory Allocation**:
-   - **Item Name**: Extract the primary item/service description name (e.g., "Milton Infrared Cooktop").
-   - **Billed Quantity**: Extract the numeric quantity. Output as an integer.
-   - **Item Rate**: Extract the unit price before taxes.
-   - **Item Amount**: Calculate or extract the final net line-item subtotal (Quantity * Rate).
-7. **Change Mode**: Always set this string strictly to 'Item Invoice'.
+EXTRACTION SPECIFICATIONS:
+- **voucher_date**: Invoice date formatted as 'DD-MM-YYYY'.
+- **voucher_type_name**: Predict 'Purchase', 'Sales', or 'Payment' based on document context.
+- **voucher_number**: Raw invoice serial reference number string.
+- **supplier_address**: Full physical street address of the vendor from the document.
+- **items**: Array containing every single distinct visible inventory line item with item_name, billed_quantity, item_rate, and item_amount.
+- **change_mode**: Predict 'Item Invoice' if items exist, else 'Accounting Invoice'.
 
 OUTPUT CONSTRAINTS:
-- Output your response strictly as a single, valid JSON object.
-- Do not wrap the JSON output inside markdown code blocks.
+- Output your response strictly as a single, valid JSON object. Do not include markdown code block ticks. Do not use default dummy values.
 
 EXPECTED JSON SCHEMA:
 {
   "voucher_date": "DD-MM-YYYY",
-  "voucher_type_name": "Purchase",
+  "voucher_type_name": "STRING",
   "voucher_number": "STRING",
   "supplier_address": "STRING",
-  "ledger_1_name": "STRING",
-  "ledger_1_amount": 0.00,
-  "ledger_1_dc": "Cr",
-  "ledger_2_name": "STRING",
-  "ledger_2_amount": 0.00,
-  "ledger_2_dc": "Dr",
-  "ledger_3_name": "STRING",
-  "ledger_3_amount": 0.00,
-  "ledger_3_dc": "Dr",
-  "item_name": "STRING",
-  "billed_quantity": 0,
-  "item_rate": 0.00,
-  "item_amount": 0.00,
-  "change_mode": "Item Invoice"
-}`, 
-  cache_control: { type: "ephemeral" } 
-}],
-        messages: [{
-          role: "user",
-          content: [{
-            type: "image",
-            source: { type: "base64", media_type: mediaType, data: base64Image }
-          }]
-        }]
-      });
-
-      // Clean markdown wrapper elements if present before executing parse
-      let rawText = response.content[0].text.trim();
-      if (rawText.startsWith("```")) {
-        rawText = rawText.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
-      }
-
-      extractionResult = JSON.parse(rawText);
-      usageMetrics = response.usage;
-    } else {
-      // Workaround Execution Block
-      console.log(`[Stub Mode] Simulating vision processing for job ${job.id}...`);
-      const mockData = await mockClaudeVisionExtraction(ledgerString);
-      extractionResult = mockData.extractionResult;
-      usageMetrics = mockData.usage;
+  "ledger_1_name": "STRING", "ledger_1_amount": 0.00, "ledger_1_dc": "Cr",
+  "ledger_2_name": "STRING", "ledger_2_amount": 0.00, "ledger_2_dc": "Dr",
+  "ledger_3_name": "STRING", "ledger_3_amount": 0.00, "ledger_3_dc": "Dr",
+  "items": [
+    {
+      "item_name": "STRING",
+      "billed_quantity": 0,
+      "item_rate": 0.00,
+      "item_amount": 0.00
     }
-
-    // 3. Complete structural database mutations
-    await supabase.from('invoices').update({
-      status: 'COMPLETED',
-      extracted_data: extractionResult
-    }).eq('id', invoiceId);
-
-    await supabase.from('usage_logs').insert({
-      invoice_id: invoiceId,
-      client_id: clientId,
-      input_tokens: usageMetrics.input_tokens,
-      output_tokens: usageMetrics.output_tokens,
-      cache_read_tokens: usageMetrics.cache_read_tokens,
-      pages_processed: 1
+  ],
+  "change_mode": "STRING"
+}`, 
+        cache_control: { type: "ephemeral" } 
+      }],
+      messages: [{ 
+        role: "user", 
+        content: [{ type: "image", source: { type: "base64", media_type: mediaType, data: base64Image } }] 
+      }]
     });
 
-    console.log(`[Success] Job ${job.id} finalized database transactions.`);
-    return extractionResult;
+    // 4. Sanitize and Extract Text String
+    let rawText = response.content[0].text.trim();
+    if (rawText.startsWith("```")) {
+      rawText = rawText.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+    }
+
+    const extractionResult = JSON.parse(rawText);
+    console.log(`[Success] Extracted ${extractionResult.items?.length || 0} line items dynamically.`);
+
+    // 5. Update Record State inside Database
+    const { error: updateError } = await supabase
+      .from('invoices')
+      .update({
+        status: 'COMPLETED',
+        extracted_data: extractionResult,
+        file_path: storagePath,
+        completed_at: new Date().toISOString()
+      })
+      .eq('id', invoiceId);
+
+    if (updateError) throw new Error(`Database record mutation failed: updateError.message`);
+
+    // 6. Safe Infrastructure Usage Logs Sync 
+    // Uses a separate block so if the log table doesn't exist, it won't crash the main booking pipeline
+    try {
+      await supabase.from('usage_logs').insert({
+        client_id: clientId,
+        invoice_id: invoiceId,
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens
+      });
+    } catch (logErr) {
+      console.log(`[Notice] Usage log entry skipped (Table may be uninitialized): ${logErr.message}`);
+    }
+
+    console.log(`🏁 Job ${job.id} complete for Client context.`);
+    return { success: true };
 
   } catch (error) {
-    console.error(`[Failure] Job ${job.id} execution failed: ${error.message}`);
-    await supabase.from('invoices').update({ status: 'FAILED' }).eq('id', invoiceId);
-    throw error;
+    console.error(`❌ Job ${job.id} processing aborted:`, error.message);
+    
+    // Set matching database column error states so the dashboard user can see the failure
+    await supabase.from('invoices').update({ 
+      status: 'FAILED',
+      extracted_data: { error: error.message }
+    }).eq('id', invoiceId).catch(() => {});
+
+    throw error; // Propagate exception back up to let BullMQ trigger attempt retries
   }
-}, {
-  connection: redisOptions,
-  concurrency: 15 // Keeps the local multi-threaded resource bottleneck test real
+}
+
+/**
+ * START THE WORKER LISTENER
+ */
+const worker = new Worker('invoice-queue', processInvoiceJob, {
+  connection: redisConnection,
+  concurrency: 2
 });
 
-worker.on('completed', (job) => console.log(`✔ Job ${job.id} completed.`));
-worker.on('failed', (job, err) => console.log(`❌ Job ${job.id} execution failed: ${err.message}`));
+// ADD THIS LINE: Export the queue instance so gateway.js can use invoiceQueue.add()
+export const invoiceQueue = new Queue('invoice-queue', {
+  connection: redisConnection
+});
+
+worker.on('ready', () => {
+  console.log('⚡ SwiftSync Automated Queue Worker is live and polling Redis...');
+});
+

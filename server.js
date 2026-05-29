@@ -184,62 +184,71 @@ app.get('/api/export/tally', async (req, res) => {
       return res.status(444).json({ error: "No processed vouchers found for this client" });
     }
 
-    // 1. Core Header Definition matching your exact template columns
+    // 1. Find the maximum number of items in any single invoice to scale columns dynamically
+    let maxItemsCount = 1;
+    invoices.forEach(inv => {
+      const d = inv.extracted_data;
+      if (d && d.items && Array.isArray(d.items)) {
+        if (d.items.length > maxItemsCount) maxItemsCount = d.items.length;
+      }
+    });
+
+    // 2. Construct Base Matrix Headers
     const csvHeaders = [
-      "Voucher Date",
-      "Voucher Type Name",
-      "Voucher Number",
-      "Buyer/Supplier - Address",
-      "Ledger Name", "Ledger Amount", "Ledger Amount Dr/Cr", // Slot 1
-      "Ledger Name", "Ledger Amount", "Ledger Amount Dr/Cr", // Slot 2
-      "Ledger Name", "Ledger Amount", "Ledger Amount Dr/Cr", // Slot 3
-      "Item Name",
-      "Billed Quantity",
-      "Item Rate",
-      "Item Amount",
-      "Change Mode"
+      "Voucher Date", "Voucher Type Name", "Voucher Number", "Buyer/Supplier - Address",
+      "Ledger Name 1", "Ledger Amount 1", "Ledger Amount Dr/Cr 1",
+      "Ledger Name 2", "Ledger Amount 2", "Ledger Amount Dr/Cr 2",
+      "Ledger Name 3", "Ledger Amount 3", "Ledger Amount Dr/Cr 3"
     ];
 
-    // 2. Loop and map JSON objects into comma-separated position vectors
+    // Append dynamic item column sets sequentially
+    for (let i = 1; i <= maxItemsCount; i++) {
+      csvHeaders.push(`Item Name ${i}`, `Billed Quantity ${i}`, `Item Rate ${i}`, `Item Amount ${i}`);
+    }
+    csvHeaders.push("Change Mode");
+
+    // 3. Map Data Rows
     const csvRows = invoices.map(inv => {
       const d = inv.extracted_data;
 
-      // Handle quote-escapes for free-text text values to prevent syntax breaks
       const supplierAddress = `"${(d.supplier_address || '').replace(/"/g, '""')}"`;
       const l1Name = `"${(d.ledger_1_name || '').replace(/"/g, '""')}"`;
       const l2Name = `"${(d.ledger_2_name || '').replace(/"/g, '""')}"`;
       const l3Name = `"${(d.ledger_3_name || '').replace(/"/g, '""')}"`;
-      const itemName = `"${(d.item_name || '').replace(/"/g, '""')}"`;
 
-      return [
+      // Build leading ledger segment
+      const rowVector = [
         d.voucher_date,
-        d.voucher_type_name,
+        d.voucher_type_name, // Dynamic model prediction
         d.voucher_number,
         supplierAddress,
-        
-        // Ledger Entry Block 1 (Creditor Ledger)
         l1Name, d.ledger_1_amount || 0, d.ledger_1_dc || 'Cr',
-        
-        // Ledger Entry Block 2 (Debit Base Purchase Ledger)
         l2Name, d.ledger_2_amount || 0, d.ledger_2_dc || 'Dr',
-        
-        // Ledger Entry Block 3 (Tax Processing Ledger)
-        l3Name, d.ledger_3_amount || 0, d.ledger_3_dc || 'Dr',
-        
-        // Inventory Configuration Layer
-        itemName,
-        d.billed_quantity || 0,
-        d.item_rate || 0,
-        d.item_amount || 0,
-        d.change_mode || 'Item Invoice'
-      ].join(',');
+        l3Name, d.ledger_3_amount || 0, d.ledger_3_dc || 'Dr'
+      ];
+
+      // Loop through max item count slots to append inventory sets cleanly
+      const extractedItems = d.items || [];
+      for (let i = 0; i < maxItemsCount; i++) {
+        const item = extractedItems[i];
+        if (item) {
+          const escapedItemName = `"${(item.item_name || '').replace(/"/g, '""')}"`;
+          rowVector.push(escapedItemName, item.billed_quantity || 0, item.item_rate || 0, item.item_amount || 0);
+        } else {
+          // Fill empty padding slots if this invoice has fewer items than the batch maximum
+          rowVector.push("", "", "", "");
+        }
+      }
+
+      // Add trailing mode classification
+      rowVector.push(d.change_mode || 'Item Invoice');
+      return rowVector.join(',');
     });
 
-    const finalCsvString = [csvHeaders.join('\t'), ...csvRows].join('\n');
+    const finalCsvString = [csvHeaders.join(','), ...csvRows].join('\n');
 
-    // 3. Set download context directives
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename=Tally_Inventory_Import_${clientId.slice(0,8)}.csv`);
+    res.setHeader('Content-Disposition', `attachment; filename=Tally_MultiItem_Export_${clientId.slice(0,8)}.csv`);
     res.status(200).send(finalCsvString);
 
   } catch (error) {
@@ -291,10 +300,10 @@ app.post('/api/export/json-batch', async (req, res) => {
   }
 
   try {
-    // Select only rows matching our current batch session identifiers
+    // Select the newly patched columns along with the updated extracted_data block
     const { data: invoices, error } = await supabase
       .from('invoices')
-      .select('id, status, storage_path, extracted_data')
+      .select('id, status, file_path, extracted_data, completed_at')
       .in('id', invoiceIds);
 
     if (error) throw error;
@@ -303,7 +312,6 @@ app.post('/api/export/json-batch', async (req, res) => {
       return res.status(444).json({ error: "No transaction records found for this active batch framework." });
     }
 
-    // Structure a clean metadata response object
     const exportBundle = {
       exported_at: new Date().toISOString(),
       batch_summary: {
@@ -311,15 +319,16 @@ app.post('/api/export/json-batch', async (req, res) => {
         processed_successfully: invoices.filter(i => i.status === 'COMPLETED').length,
         failed_or_pending: invoices.filter(i => i.status !== 'COMPLETED').length
       },
+      // Maps the data cleanly. extracted_accounting_payload now natively contains the "items" array
       transactions: invoices.map(inv => ({
         invoice_uuid: inv.id,
         processing_status: inv.status,
-        original_file: inv.storage_path ? inv.storage_path.split('/').pop() : 'unknown',
-        extracted_accounting_payload: inv.extracted_data
+        original_file: inv.file_path ? inv.file_path.split('/').pop() : 'unknown',
+        completed_timestamp: inv.completed_at,
+        extracted_accounting_payload: inv.extracted_data 
       }))
     };
 
-    // Set headers to trigger an immediate browser file attachment stream
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename=SwiftSync_Batch_${Date.now()}.json`);
     res.status(200).send(JSON.stringify(exportBundle, null, 2));
@@ -328,7 +337,6 @@ app.post('/api/export/json-batch', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 app.listen(PORT, () => {
   console.log(`🚀 API Server active at http://localhost:${PORT}`);
 });
