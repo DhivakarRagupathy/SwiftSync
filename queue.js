@@ -22,6 +22,35 @@ const redisConnection = process.env.REDIS_URL
   : new IORedis({ host: '127.0.0.1', port: 6379, ...redisOptions });
 
 /**
+ * Safely extracts and parses a JSON object from an LLM string response,
+ * ignoring any conversational preamble or markdown backticks.
+ * @param {string} rawText - The raw response string from Claude.
+ * @returns {Object} - The parsed JSON payload.
+ */
+function extractAndParseJSON(rawText) {
+  if (!rawText || typeof rawText !== 'string') {
+    throw new Error("Invalid raw text input received from LLM pipeline.");
+  }
+
+  // Find the boundaries of the actual JSON structure
+  const startIdx = rawText.indexOf('{');
+  const endIdx = rawText.lastIndexOf('}');
+
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+    throw new Error(`No clean JSON boundaries detected. Raw output snippet: "${rawText.substring(0, 60)}..."`);
+  }
+
+  // Slice out just the structural JSON payload
+  const cleanJSONString = rawText.substring(startIdx, endIdx + 1).trim();
+
+  try {
+    return JSON.parse(cleanJSONString);
+  } catch (parseError) {
+    throw new Error(`Extracted block is not structurally valid JSON: ${parseError.message}`);
+  }
+}
+
+/**
  * Core Core Job Processing Loop
  */
 async function processInvoiceJob(job) {
@@ -59,9 +88,12 @@ async function processInvoiceJob(job) {
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 2500, // Large ceiling allowance for complex invoices containing dozens of lines
+      temperature: 0, // Force lowest variance to ensure strict JSON-only output
       system: [{ 
         type: "text", 
-        text: `You are a literal, deterministic data extraction engine for Tally ERP. You must never invent, hallucinate, or use example names.
+        text: `You are a rigid, deterministic data extraction engine for Tally ERP. You are not a conversational assistant.
+
+CRITICAL OUTPUT RULE: You MUST output ONLY a valid JSON object. Do not include any introductory sentences, polite padding, explanations, markdown code blocks, trailing text, or conversational commentary. Your response must start directly with '{' and end directly with '}'.
 
 STRICT DATA SOURCE BINDING RULES:
 1. **ledger_1_name (Party Ledger)**: Look at the actual invoice image. Extract the exact name of the Vendor/Supplier company printed on the document. Do not use placeholder names.
@@ -78,9 +110,6 @@ EXTRACTION SPECIFICATIONS:
 - **supplier_address**: Full physical street address of the vendor from the document.
 - **items**: Array containing every single distinct visible inventory line item with item_name, billed_quantity, item_rate, and item_amount.
 - **change_mode**: Predict 'Item Invoice' if items exist, else 'Accounting Invoice'.
-
-OUTPUT CONSTRAINTS:
-- Output your response strictly as a single, valid JSON object. Do not include markdown code block ticks. Do not use default dummy values.
 
 EXPECTED JSON SCHEMA:
 {
@@ -111,11 +140,9 @@ EXPECTED JSON SCHEMA:
 
     // 4. Sanitize and Extract Text String
     let rawText = response.content[0].text.trim();
-    if (rawText.startsWith("```")) {
-      rawText = rawText.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
-    }
-
-    const extractionResult = JSON.parse(rawText);
+    
+    // Use defensive JSON extractor to safely handle conversational padding
+    const extractionResult = extractAndParseJSON(rawText);
     console.log(`[Success] Extracted ${extractionResult.items?.length || 0} line items dynamically.`);
 
     // 5. Update Record State inside Database

@@ -289,6 +289,45 @@ app.post('/api/upload/bulk-initiate', async (req, res) => {
 });
 
 /**
+ * GET /api/invoices/status
+ * Checks the processing status of multiple invoices
+ * Query param: ids=id1,id2,id3
+ */
+app.get('/api/invoices/status', async (req, res) => {
+  const { ids } = req.query;
+
+  if (!ids) {
+    return res.status(400).json({ error: "Missing 'ids' query parameter. Provide comma-separated invoice IDs." });
+  }
+
+  try {
+    const invoiceIds = ids.split(',').map(id => id.trim());
+    
+    const { data: invoices, error } = await supabase
+      .from('invoices')
+      .select('id, status, completed_at')
+      .in('id', invoiceIds);
+
+    if (error) throw error;
+
+    if (!invoices || invoices.length === 0) {
+      return res.status(404).json({ error: "No invoices found for the provided IDs." });
+    }
+
+    res.json({ 
+      invoices: invoices.map(inv => ({
+        id: inv.id,
+        status: inv.status,
+        completed_at: inv.completed_at
+      }))
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/export/json-batch
  * Compiles and downloads a clean JSON file containing ONLY the current active batch records
  */
