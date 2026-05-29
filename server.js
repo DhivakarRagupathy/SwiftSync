@@ -48,16 +48,40 @@ app.get('/login', (req, res) => {
 });
 
 // Authentication Processing Endpoint
-app.post('/api/auth/login', express.json(), (req, res) => {
+app.post('/api/auth/login', express.json(), async (req, res) => {
   const { username, password } = req.body;
   
-  // Clean, hardcoded authentication credentials for fast local gating
-  if (username === 'admin' && password === 'Kangeyam2026') {
-    res.setHeader('Set-Cookie', 'ss_session=authenticated; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400');
-    return res.json({ success: true });
+  if (!username || !password) {
+    return res.status(400).json({ error: "Missing username or password" });
   }
-  
-  res.status(401).json({ error: "Invalid credentials" });
+
+  try {
+    // Check credentials against app_users table
+    const { data: user, error } = await supabase
+      .from('app_users')
+      .select('id, username, is_admin, invoices_left')
+      .eq('username', username)
+      .eq('password', password) // TODO: Use bcrypt for production!
+      .single();
+
+    if (error || !user) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    // Set session cookie and return user data
+    res.setHeader('Set-Cookie', `ss_session=authenticated; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`);
+    return res.json({ 
+      success: true,
+      user: {
+        username: user.username,
+        is_admin: user.is_admin,
+        invoices_left: user.invoices_left
+      }
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    return res.status(500).json({ error: "Authentication service error" });
+  }
 });
 
 app.use(express.json());
@@ -256,35 +280,49 @@ app.get('/api/export/tally', async (req, res) => {
   }
 });
 
-/**
- * POST /api/upload/bulk-initiate
- * Handles high-volume enterprise batches by generating multiple presigned URLs in a single round-trip
- */
 app.post('/api/upload/bulk-initiate', async (req, res) => {
-  const { files, clientId } = req.body; // 'files' is an array of strings: ["inv1.jpg", "inv2.png", ...]
-  
-  if (!files || !Array.isArray(files) || files.length === 0 || !clientId) {
-    return res.status(400).json({ error: "Invalid payload. Provide an array of filenames and a clientId." });
-  }
-
   try {
-    console.log(`[Bulk API] Initializing a batch of ${files.length} uploads for Client: ${clientId}`);
-    
-    // Generate presigned URLs concurrently using Promise.all
+    const { files, username } = req.body; 
+
+    if (!files || !Array.isArray(files) || !username) {
+      return res.status(400).json({ error: "Missing required payload arrays or routing contexts." });
+    }
+
+    // 1. Fetch current balance state for the specified user
+    const { data: user, error } = await supabase
+      .from('app_users')
+      .select('id, invoices_left')
+      .eq('username', username)
+      .single();
+
+    if (error || !user) {
+      return res.status(404).json({ error: "Access denied. User profile not identified." });
+    }
+
+    // 2. Enforce explicit numeric allocation gate
+    if (user.invoices_left < files.length) {
+      return res.status(403).json({
+        error: "Insufficient Balance",
+        message: `Inbound batch rejected. This action requires ${files.length} allocations, but your balance has only ${user.invoices_left} remaining invoices left.`
+      });
+    }
+
+    // 3. Generate presigned URLs for all files with appUserId embedded
     const uploadManifestPromises = files.map(async (fileName) => {
       try {
-        const meta = await requestPresignedUpload(fileName, clientId);
-        return { fileName, status: 'success', ...meta };
+        const meta = await requestPresignedUpload(fileName, user.id); // Pass user.id instead of clientId
+        return { fileName, status: 'success', appUserId: user.id, ...meta };
       } catch (err) {
         return { fileName, status: 'error', error: err.message };
       }
     });
 
     const uploadManifest = await Promise.all(uploadManifestPromises);
-    res.json({ batch: uploadManifest });
+    res.json({ batch: uploadManifest, userId: user.id });
 
   } catch (error) {
-    res.status(500).json({ error: `Bulk initialization failed: ${error.message}` });
+    console.error("Balance pre-flight error:", error);
+    return res.status(500).json({ error: "Internal ledger processing exception." });
   }
 });
 
@@ -320,6 +358,40 @@ app.get('/api/invoices/status', async (req, res) => {
         status: inv.status,
         completed_at: inv.completed_at
       }))
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/user/quota
+ * Gets the current user's invoice quota
+ * Query param: username=<username>
+ */
+app.get('/api/user/quota', async (req, res) => {
+  const { username } = req.query;
+
+  if (!username) {
+    return res.status(400).json({ error: "Missing 'username' query parameter." });
+  }
+
+  try {
+    const { data: user, error } = await supabase
+      .from('app_users')
+      .select('username, invoices_left, is_admin')
+      .eq('username', username)
+      .single();
+
+    if (error || !user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    res.json({ 
+      username: user.username,
+      invoices_left: user.invoices_left,
+      is_admin: user.is_admin
     });
 
   } catch (error) {
