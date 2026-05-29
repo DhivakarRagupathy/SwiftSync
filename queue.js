@@ -12,12 +12,14 @@ dotenv.config({ path: './local.env' }); // Adjust file matching to your setup (.
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// Dynamic Redis Network Binding
-const redisConnection = new IORedis(process.env.REDIS_URL || {
-  host: '127.0.0.1',
-  port: 6379,
-  maxRetriesPerRequest: null
-});
+const redisOptions = {
+  maxRetriesPerRequest: null // Critical for BullMQ operation
+};
+
+// Properly applies options whether using a connection string or localhost object
+const redisConnection = process.env.REDIS_URL
+  ? new IORedis(process.env.REDIS_URL, redisOptions)
+  : new IORedis({ host: '127.0.0.1', port: 6379, ...redisOptions });
 
 /**
  * Core Core Job Processing Loop
