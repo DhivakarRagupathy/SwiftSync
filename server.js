@@ -376,6 +376,7 @@ app.post('/api/export/json-batch', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-app.listen(PORT, () => {
-  console.log(`🚀 API Server active at http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 API Server active at http://0.0.0.0:${PORT}`);
+  console.log(`📍 Accessible from external hosts at http://<your-server-ip>:${PORT}`);
 });
