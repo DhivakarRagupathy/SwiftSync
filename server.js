@@ -11,149 +11,124 @@ const PORT = process.env.PORT || 3000;
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// Calculate absolute directory path for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const publicFolder = path.join(__dirname, 'public');
 
-// Quick plain-text cookie parser middleware to avoid extra npm installs
-const getAuthCookie = (req) => {
+// ---------- Session & Auth Helpers ----------
+const getSessionUser = async (req) => {
   const cookies = req.headers.cookie;
   if (!cookies) return null;
   const match = cookies.split('; ').find(row => row.startsWith('ss_session='));
-  return match ? match.split('=')[1] : null;
+  if (!match) return null;
+  const sessionToken = match.split('=')[1];
+  // In production, use a proper session store. For simplicity, we store session in a Map or DB.
+  // Here we'll assume sessionToken is the user ID (signed). For demo, we'll lookup a sessions table.
+  const { data: session, error } = await supabase
+    .from('user_sessions')
+    .select('user_id, expires_at')
+    .eq('token', sessionToken)
+    .single();
+  if (error || !session || new Date(session.expires_at) < new Date()) return null;
+  return session.user_id;
 };
 
-// Authentication Protection Gate
-const requireAuth = (req, res, next) => {
-  // Allow the login page and authentication API route to pass through unhindered
-  if (req.path === '/login' || req.path === '/api/auth/login') {
-    return next();
-  }
-  
-  const session = getAuthCookie(req);
-  if (session === 'authenticated') {
+const requireAuth = async (req, res, next) => {
+  if (req.path === '/login' || req.path === '/api/auth/login') return next();
+  const userId = await getSessionUser(req);
+  if (userId) {
+    req.userId = userId;
     next();
   } else {
     res.redirect('/login');
   }
 };
 
-// Apply the protection gate globally to all assets and API routes
+app.use(express.json());
+app.use(express.static(publicFolder));
 app.use(requireAuth);
 
-// Serve the Login Page explicitly
+// ---------- Login Page ----------
 app.get('/login', (req, res) => {
   res.sendFile(path.join(publicFolder, 'login.html'));
 });
 
-// Authentication Processing Endpoint
+// ---------- Authentication Endpoint ----------
 app.post('/api/auth/login', express.json(), async (req, res) => {
   const { username, password } = req.body;
-  
-  if (!username || !password) {
-    return res.status(400).json({ error: "Missing username or password" });
-  }
+  if (!username || !password) return res.status(400).json({ error: "Missing credentials" });
 
   try {
-    // Check credentials against app_users table
     const { data: user, error } = await supabase
       .from('app_users')
-      .select('id, username, is_admin, invoices_left')
+      .select('id, username, is_admin, invoices_left, client_id')
       .eq('username', username)
-      .eq('password', password) // TODO: Use bcrypt for production!
+      .eq('password', password) // TODO: bcrypt
       .single();
 
-    if (error || !user) {
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
+    if (error || !user) return res.status(401).json({ error: "Invalid credentials" });
 
-    // Set session cookie and return user data
-    res.setHeader('Set-Cookie', `ss_session=authenticated; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`);
-    return res.json({ 
+    // Create a session token (UUID)
+    const sessionToken = crypto.randomUUID();
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 1); // 1 day
+
+    await supabase.from('user_sessions').insert({
+      token: sessionToken,
+      user_id: user.id,
+      expires_at: expiresAt.toISOString()
+    });
+
+    res.setHeader('Set-Cookie', `ss_session=${sessionToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`);
+    res.json({
       success: true,
       user: {
+        id: user.id,
         username: user.username,
         is_admin: user.is_admin,
-        invoices_left: user.invoices_left
+        invoices_left: user.invoices_left,
+        client_id: user.client_id
       }
     });
   } catch (err) {
     console.error("Login error:", err);
-    return res.status(500).json({ error: "Authentication service error" });
+    res.status(500).json({ error: "Authentication service error" });
   }
 });
 
-app.use(express.json());
-app.use(express.static(publicFolder)); // Serve static files from absolute path
-
-// Explicit root route handler with a custom visual debugger
+// ---------- Root ----------
 app.get('/', (req, res) => {
-  const indexPath = path.join(publicFolder, 'index.html');
-  res.sendFile(indexPath, (err) => {
-    if (err) {
-      res.status(500).send(`
-        <div style="font-family:sans-serif; padding:40px; max-width:600px; margin:auto; line-height:1.6;">
-          <h1 style="color:#e11d48;">SwiftSync Server Path Debugger</h1>
-          <p>The server is active, but it cannot find your <strong>index.html</strong> file.</p>
-          <p><strong>Where the server is looking right now:</strong></p>
-          <code style="background:#f1f5f9; padding:8px; display:block; border-radius:4px; font-family:monospace; border:1px solid #cbd5e1;">${indexPath}</code>
-          <h3 style="margin-top:24px;">How to resolve this immediately:</h3>
-          <ol>
-            <li>Go to that exact path on your computer.</li>
-            <li>Verify the folder name is lowercase <code>public</code>.</li>
-            <li>Verify the file name is lowercase <code>index.html</code>. <em>(Watch out for Windows hiding extensions, making it secretly <code>index.html.txt</code>)</em>.</li>
-          </ol>
-        </div>
-      `);
-    }
-  });
+  res.sendFile(path.join(publicFolder, 'index.html'));
 });
 
-// --- API ROUTES ---
-
+// ---------- API: Dashboard Metrics ----------
 app.get('/api/dashboard/metrics', async (req, res) => {
   const { auditorId } = req.query;
-  if (!auditorId) return res.status(400).json({ error: "Missing auditorId parameter" });
+  if (!auditorId) return res.status(400).json({ error: "Missing auditorId" });
 
   try {
-    // 1. Pull log metrics along with token data from the DB
     const { data: logs, error } = await supabase
       .from('usage_logs')
-      .select(`
-        pages_processed,
-        input_tokens,
-        output_tokens,
-        cache_read_tokens,
-        clients!inner ( auditor_id )
-      `)
+      .select('pages_processed, input_tokens, output_tokens, cache_read_tokens, clients!inner(auditor_id)')
       .eq('clients.auditor_id', auditorId);
 
     if (error) throw error;
 
-    // 2. Aggregate counts
     const totalPages = logs.reduce((sum, log) => sum + (log.pages_processed || 0), 0);
-    
-    // 3. Calculate exact infrastructure expenditures (USD)
     let totalClaudeCostUSD = 0;
     logs.forEach(log => {
-      const inputCost = ((log.input_tokens || 0) / 1000000) * 3.00;
-      const outputCost = ((log.output_tokens || 0) / 1000000) * 15.00;
-      const cacheSavedCost = ((log.cache_read_tokens || 0) / 1000000) * 0.30;
-      
-      totalClaudeCostUSD += (inputCost + outputCost + cacheSavedCost);
+      const inputCost = ((log.input_tokens || 0) / 1_000_000) * 3.00;
+      const outputCost = ((log.output_tokens || 0) / 1_000_000) * 15.00;
+      const cacheCost = ((log.cache_read_tokens || 0) / 1_000_000) * 0.30;
+      totalClaudeCostUSD += inputCost + outputCost + cacheCost;
     });
 
-    // Convert USD infrastructure costs to INR (using a standard baseline exchange rate of ~84)
-    const totalInfrasubscriptionINR = totalClaudeCostUSD * 84;
-
-    // 4. Client and Partner Revenue Ledger calculations
+    const exchangeRate = 84;
+    const totalInfraINR = totalClaudeCostUSD * exchangeRate;
     const grossBillingINR = totalPages * 5;
     const partnerPayoutINR = totalPages * 1;
     const netSaaSRevenue = grossBillingINR - partnerPayoutINR;
-    
-    // 5. Final Take-Home Profit Margin
-    const absoluteTakeHomeProfit = netSaaSRevenue - totalInfrasubscriptionINR;
+    const netProfit = netSaaSRevenue - totalInfraINR;
 
     res.json({
       summary: {
@@ -161,8 +136,8 @@ app.get('/api/dashboard/metrics', async (req, res) => {
         gross_billing_inr: grossBillingINR,
         partner_payout_inr: partnerPayoutINR,
         net_saas_revenue_inr: netSaaSRevenue,
-        claude_api_cost_inr: parseFloat(totalInfrasubscriptionINR.toFixed(2)),
-        net_take_home_profit_inr: parseFloat(absoluteTakeHomeProfit.toFixed(2))
+        claude_api_cost_inr: parseFloat(totalInfraINR.toFixed(2)),
+        net_take_home_profit_inr: parseFloat(netProfit.toFixed(2))
       }
     });
   } catch (error) {
@@ -170,11 +145,65 @@ app.get('/api/dashboard/metrics', async (req, res) => {
   }
 });
 
+// ---------- Bulk Initiate (with atomic quota reserve) ----------
+app.post('/api/upload/bulk-initiate', async (req, res) => {
+  const { files, username } = req.body;
+  if (!files || !Array.isArray(files) || !username) {
+    return res.status(400).json({ error: "Missing files or username" });
+  }
+
+  try {
+    // Get user data including client_id
+    const { data: user, error: userError } = await supabase
+      .from('app_users')
+      .select('id, invoices_left, client_id')
+      .eq('username', username)
+      .single();
+
+    if (userError || !user) return res.status(404).json({ error: "User not found" });
+
+    if (user.invoices_left < files.length) {
+      return res.status(403).json({
+        error: "Insufficient balance",
+        message: `Need ${files.length}, have ${user.invoices_left}`
+      });
+    }
+
+    // Atomic decrement quota
+    const { error: updateError } = await supabase
+      .from('app_users')
+      .update({ invoices_left: user.invoices_left - files.length })
+      .eq('id', user.id)
+      .eq('invoices_left', user.invoices_left); // optimistic locking
+
+    if (updateError) {
+      return res.status(409).json({ error: "Quota changed, please retry" });
+    }
+
+    const uploadManifest = await Promise.all(files.map(async (fileName) => {
+      try {
+        // Pass client_id as the tenant identifier, and user.id as app_user_id
+        const meta = await requestPresignedUpload(fileName, user.client_id, user.id);
+        return { fileName, status: 'success', appUserId: user.id, clientId: user.client_id, ...meta };
+      } catch (err) {
+        // If any fails, we should rollback quota? For simplicity, return error.
+        return { fileName, status: 'error', error: err.message };
+      }
+    }));
+
+    res.json({ batch: uploadManifest, userId: user.id });
+  } catch (err) {
+    console.error("Bulk init error:", err);
+    res.status(500).json({ error: "Internal error" });
+  }
+});
+
+// ---------- Single Upload Initiate (kept for compatibility) ----------
 app.post('/api/upload/initiate', async (req, res) => {
   const { fileName, clientId } = req.body;
   if (!fileName || !clientId) return res.status(400).json({ error: "Missing parameters" });
   try {
-    const uploadMeta = await requestPresignedUpload(fileName, clientId);
+    const uploadMeta = await requestPresignedUpload(fileName, clientId, null);
     res.json(uploadMeta);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -182,19 +211,46 @@ app.post('/api/upload/initiate', async (req, res) => {
 });
 
 app.post('/api/upload/complete', async (req, res) => {
-  const { invoiceId, clientId, storagePath } = req.body;
-  if (!invoiceId || !clientId || !storagePath) return res.status(400).json({ error: "Missing parameters" });
+  let { invoiceId, clientId, storagePath } = req.body;
+  if (!invoiceId || !storagePath) {
+    return res.status(400).json({ error: "Missing required parameters" });
+  }
+
+  // Always use the authenticated user's ID from session
+  const authenticatedUserId = req.userId;
+  if (!authenticatedUserId) {
+    return res.status(401).json({ error: "Not authenticated" });
+  }
+
+  // Sanitize clientId – if invalid, fetch from user's record
+  if (!clientId || clientId === 'null' || clientId === 'undefined') {
+    const { data: user, error } = await supabase
+      .from('app_users')
+      .select('client_id')
+      .eq('id', authenticatedUserId)
+      .single();
+    if (!error && user?.client_id) {
+      clientId = user.client_id;
+      console.log(`[Upload Complete] Using client_id from user record: ${clientId}`);
+    } else {
+      return res.status(400).json({ error: "No valid clientId available for this user" });
+    }
+  }
+
   try {
-    const status = await registerUploadComplete(invoiceId, clientId, storagePath);
+    const status = await registerUploadComplete(invoiceId, clientId, storagePath, authenticatedUserId);
+    console.log(`[Upload Complete] Invoice ${invoiceId} linked to user ${authenticatedUserId}`);
     res.json(status);
   } catch (error) {
+    console.error("Upload complete error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
+// ---------- Tally CSV Export (with proper CSV escaping) ----------
 app.get('/api/export/tally', async (req, res) => {
   const { clientId } = req.query;
-  if (!clientId) return res.status(400).json({ error: "Missing clientId parameter" });
+  if (!clientId) return res.status(400).json({ error: "Missing clientId" });
 
   try {
     const { data: invoices, error } = await supabase
@@ -204,251 +260,144 @@ app.get('/api/export/tally', async (req, res) => {
       .eq('status', 'COMPLETED');
 
     if (error) throw error;
-    if (!invoices || invoices.length === 0) {
-      return res.status(444).json({ error: "No processed vouchers found for this client" });
-    }
+    if (!invoices.length) return res.status(404).json({ error: "No completed invoices" });
 
-    // 1. Find the maximum number of items in any single invoice to scale columns dynamically
-    let maxItemsCount = 1;
-    invoices.forEach(inv => {
-      const d = inv.extracted_data;
-      if (d && d.items && Array.isArray(d.items)) {
-        if (d.items.length > maxItemsCount) maxItemsCount = d.items.length;
+    // Escape CSV field: wrap in double quotes and escape internal quotes
+    const escapeCsv = (str) => {
+      if (str === undefined || str === null) return '';
+      const stringified = String(str);
+      if (stringified.includes(',') || stringified.includes('"') || stringified.includes('\n')) {
+        return `"${stringified.replace(/"/g, '""')}"`;
       }
+      return stringified;
+    };
+
+    let maxItems = 1;
+    invoices.forEach(inv => {
+      const items = inv.extracted_data?.items || [];
+      if (items.length > maxItems) maxItems = items.length;
     });
 
-    // 2. Construct Base Matrix Headers
-    const csvHeaders = [
-      "Voucher Date", "Voucher Type Name", "Voucher Number", "Buyer/Supplier - Address",
-      "Ledger Name 1", "Ledger Amount 1", "Ledger Amount Dr/Cr 1",
-      "Ledger Name 2", "Ledger Amount 2", "Ledger Amount Dr/Cr 2",
-      "Ledger Name 3", "Ledger Amount 3", "Ledger Amount Dr/Cr 3"
+    const headers = [
+      "Voucher Date", "Voucher Type", "Voucher No", "Supplier Address",
+      "Ledger1 Name", "Ledger1 Amount", "Ledger1 DC",
+      "Ledger2 Name", "Ledger2 Amount", "Ledger2 DC",
+      "Ledger3 Name", "Ledger3 Amount", "Ledger3 DC"
     ];
-
-    // Append dynamic item column sets sequentially
-    for (let i = 1; i <= maxItemsCount; i++) {
-      csvHeaders.push(`Item Name ${i}`, `Billed Quantity ${i}`, `Item Rate ${i}`, `Item Amount ${i}`);
+    for (let i = 1; i <= maxItems; i++) {
+      headers.push(`Item Name ${i}`, `Quantity ${i}`, `Rate ${i}`, `Amount ${i}`);
     }
-    csvHeaders.push("Change Mode");
+    headers.push("Change Mode");
 
-    // 3. Map Data Rows
-    const csvRows = invoices.map(inv => {
+    const rows = invoices.map(inv => {
       const d = inv.extracted_data;
-
-      const supplierAddress = `"${(d.supplier_address || '').replace(/"/g, '""')}"`;
-      const l1Name = `"${(d.ledger_1_name || '').replace(/"/g, '""')}"`;
-      const l2Name = `"${(d.ledger_2_name || '').replace(/"/g, '""')}"`;
-      const l3Name = `"${(d.ledger_3_name || '').replace(/"/g, '""')}"`;
-
-      // Build leading ledger segment
-      const rowVector = [
-        d.voucher_date,
-        d.voucher_type_name, // Dynamic model prediction
-        d.voucher_number,
-        supplierAddress,
-        l1Name, d.ledger_1_amount || 0, d.ledger_1_dc || 'Cr',
-        l2Name, d.ledger_2_amount || 0, d.ledger_2_dc || 'Dr',
-        l3Name, d.ledger_3_amount || 0, d.ledger_3_dc || 'Dr'
+      const row = [
+        escapeCsv(d.voucher_date),
+        escapeCsv(d.voucher_type_name),
+        escapeCsv(d.voucher_number),
+        escapeCsv(d.supplier_address),
+        escapeCsv(d.ledger_1_name), d.ledger_1_amount || 0, escapeCsv(d.ledger_1_dc || 'Cr'),
+        escapeCsv(d.ledger_2_name), d.ledger_2_amount || 0, escapeCsv(d.ledger_2_dc || 'Dr'),
+        escapeCsv(d.ledger_3_name), d.ledger_3_amount || 0, escapeCsv(d.ledger_3_dc || 'Dr')
       ];
-
-      // Loop through max item count slots to append inventory sets cleanly
-      const extractedItems = d.items || [];
-      for (let i = 0; i < maxItemsCount; i++) {
-        const item = extractedItems[i];
+      const items = d.items || [];
+      for (let i = 0; i < maxItems; i++) {
+        const item = items[i];
         if (item) {
-          const escapedItemName = `"${(item.item_name || '').replace(/"/g, '""')}"`;
-          rowVector.push(escapedItemName, item.billed_quantity || 0, item.item_rate || 0, item.item_amount || 0);
+          row.push(escapeCsv(item.item_name), item.billed_quantity || 0, item.item_rate || 0, item.item_amount || 0);
         } else {
-          // Fill empty padding slots if this invoice has fewer items than the batch maximum
-          rowVector.push("", "", "", "");
+          row.push('', '', '', '');
         }
       }
-
-      // Add trailing mode classification
-      rowVector.push(d.change_mode || 'Item Invoice');
-      return rowVector.join(',');
+      row.push(escapeCsv(d.change_mode || 'Item Invoice'));
+      return row.join(',');
     });
 
-    const finalCsvString = [csvHeaders.join(','), ...csvRows].join('\n');
-
+    const csvContent = [headers.join(','), ...rows].join('\n');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename=Tally_MultiItem_Export_${clientId.slice(0,8)}.csv`);
-    res.status(200).send(finalCsvString);
-
+    res.setHeader('Content-Disposition', `attachment; filename=Tally_Export_${clientId.slice(0,8)}.csv`);
+    res.send(csvContent);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/upload/bulk-initiate', async (req, res) => {
-  try {
-    const { files, username } = req.body; 
-
-    if (!files || !Array.isArray(files) || !username) {
-      return res.status(400).json({ error: "Missing required payload arrays or routing contexts." });
-    }
-
-    // 1. Fetch current balance state for the specified user
-    const { data: user, error } = await supabase
-      .from('app_users')
-      .select('id, invoices_left')
-      .eq('username', username)
-      .single();
-
-    if (error || !user) {
-      return res.status(404).json({ error: "Access denied. User profile not identified." });
-    }
-
-    // 2. Enforce explicit numeric allocation gate
-    if (user.invoices_left < files.length) {
-      return res.status(403).json({
-        error: "Insufficient Balance",
-        message: `Inbound batch rejected. This action requires ${files.length} allocations, but your balance has only ${user.invoices_left} remaining invoices left.`
-      });
-    }
-
-    // 3. Generate presigned URLs for all files with appUserId embedded
-    const uploadManifestPromises = files.map(async (fileName) => {
-      try {
-        const meta = await requestPresignedUpload(fileName, user.id); // Pass user.id instead of clientId
-        return { fileName, status: 'success', appUserId: user.id, ...meta };
-      } catch (err) {
-        return { fileName, status: 'error', error: err.message };
-      }
-    });
-
-    const uploadManifest = await Promise.all(uploadManifestPromises);
-    res.json({ batch: uploadManifest, userId: user.id });
-
-  } catch (error) {
-    console.error("Balance pre-flight error:", error);
-    return res.status(500).json({ error: "Internal ledger processing exception." });
-  }
-});
-
-/**
- * GET /api/invoices/status
- * Checks the processing status of multiple invoices
- * Query param: ids=id1,id2,id3
- */
-app.get('/api/invoices/status', async (req, res) => {
-  const { ids } = req.query;
-
-  if (!ids) {
-    return res.status(400).json({ error: "Missing 'ids' query parameter. Provide comma-separated invoice IDs." });
-  }
-
-  try {
-    const invoiceIds = ids.split(',').map(id => id.trim());
-    
-    const { data: invoices, error } = await supabase
-      .from('invoices')
-      .select('id, status, completed_at')
-      .in('id', invoiceIds);
-
-    if (error) throw error;
-
-    if (!invoices || invoices.length === 0) {
-      return res.status(404).json({ error: "No invoices found for the provided IDs." });
-    }
-
-    res.json({ 
-      invoices: invoices.map(inv => ({
-        id: inv.id,
-        status: inv.status,
-        completed_at: inv.completed_at
-      }))
-    });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * GET /api/user/quota
- * Gets the current user's invoice quota
- * Query param: username=<username>
- */
-app.get('/api/user/quota', async (req, res) => {
-  const { username } = req.query;
-
-  if (!username) {
-    return res.status(400).json({ error: "Missing 'username' query parameter." });
-  }
-
-  try {
-    const { data: user, error } = await supabase
-      .from('app_users')
-      .select('username, invoices_left, is_admin')
-      .eq('username', username)
-      .single();
-
-    if (error || !user) {
-      return res.status(404).json({ error: "User not found." });
-    }
-
-    res.json({ 
-      username: user.username,
-      invoices_left: user.invoices_left,
-      is_admin: user.is_admin
-    });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * POST /api/export/json-batch
- * Compiles and downloads a clean JSON file containing ONLY the current active batch records
- */
+// ---------- JSON Batch Export (with ownership check) ----------
 app.post('/api/export/json-batch', async (req, res) => {
   const { invoiceIds } = req.body;
-
   if (!invoiceIds || !Array.isArray(invoiceIds) || invoiceIds.length === 0) {
-    return res.status(400).json({ error: "No active execution context found. Provide target invoiceIds." });
+    return res.status(400).json({ error: "No invoice IDs provided" });
   }
 
   try {
-    // Select the newly patched columns along with the updated extracted_data block
+    // Get current user ID from session
+    const userId = req.userId;
+    // Verify all invoices belong to this user via app_user_id
     const { data: invoices, error } = await supabase
       .from('invoices')
-      .select('id, status, file_path, extracted_data, completed_at')
-      .in('id', invoiceIds);
+      .select('id, status, file_path, extracted_data, completed_at, app_user_id')
+      .in('id', invoiceIds)
+      .eq('app_user_id', userId); // enforce ownership
 
     if (error) throw error;
-
-    if (!invoices || invoices.length === 0) {
-      return res.status(444).json({ error: "No transaction records found for this active batch framework." });
-    }
+    if (!invoices.length) return res.status(403).json({ error: "No accessible invoices" });
 
     const exportBundle = {
       exported_at: new Date().toISOString(),
       batch_summary: {
-        total_items_submitted: invoices.length,
-        processed_successfully: invoices.filter(i => i.status === 'COMPLETED').length,
-        failed_or_pending: invoices.filter(i => i.status !== 'COMPLETED').length
+        total: invoices.length,
+        completed: invoices.filter(i => i.status === 'COMPLETED').length,
+        failed: invoices.filter(i => i.status === 'FAILED').length
       },
-      // Maps the data cleanly. extracted_accounting_payload now natively contains the "items" array
       transactions: invoices.map(inv => ({
         invoice_uuid: inv.id,
-        processing_status: inv.status,
-        original_file: inv.file_path ? inv.file_path.split('/').pop() : 'unknown',
-        completed_timestamp: inv.completed_at,
-        extracted_accounting_payload: inv.extracted_data 
+        status: inv.status,
+        file: inv.file_path?.split('/').pop(),
+        completed_at: inv.completed_at,
+        data: inv.extracted_data
       }))
     };
 
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename=SwiftSync_Batch_${Date.now()}.json`);
-    res.status(200).send(JSON.stringify(exportBundle, null, 2));
-
+    res.send(JSON.stringify(exportBundle, null, 2));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ---------- Invoice Status Polling (with user scope) ----------
+app.get('/api/invoices/status', async (req, res) => {
+  const { ids } = req.query;
+  if (!ids) return res.status(400).json({ error: "Missing ids" });
+  try {
+    const invoiceIds = ids.split(',').map(id => id.trim());
+    const userId = req.userId;
+    const { data: invoices, error } = await supabase
+      .from('invoices')
+      .select('id, status, completed_at')
+      .in('id', invoiceIds)
+      .eq('app_user_id', userId);  // critical
+    if (error) throw error;
+    res.json({ invoices });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ---------- User Quota (requires session) ----------
+app.get('/api/user/quota', async (req, res) => {
+  const userId = req.userId;
+  const { data: user, error } = await supabase
+    .from('app_users')
+    .select('invoices_left')
+    .eq('id', userId)
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ invoices_left: user.invoices_left });
+});
+
+// ---------- Start Server ----------
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 API Server active at http://0.0.0.0:${PORT}`);
-  console.log(`📍 Accessible from external hosts at http://<your-server-ip>:${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });

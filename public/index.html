@@ -11,25 +11,29 @@
 <body class="bg-slate-50 min-h-screen font-sans p-6">
 
     <div class="max-w-6xl mx-auto">
+        <!-- Header with logout button -->
         <div class="flex justify-between items-center mb-8 border-b border-slate-200 pb-5">
             <div>
                 <h1 class="text-2xl font-bold text-slate-900 tracking-tight">SwiftSync Platform Dashboard</h1>
-        
+                <p id="user-info" class="text-sm text-slate-500 mt-1">Loading...</p>
             </div>
-            <div class="flex items-center">
+            <div class="flex gap-2">
                 <button id="btn-json-export" onclick="exportBatchJson()"
-                    class="hidden bg-slate-100 hover:bg-slate-200 text-slate-800 px-4 py-2 rounded font-medium text-sm transition-colors border border-slate-200 mr-2">
+                    class="hidden bg-slate-100 hover:bg-slate-200 text-slate-800 px-4 py-2 rounded font-medium text-sm transition-colors border border-slate-200">
                     Export Batch (.JSON)
                 </button>
-
                 <button onclick="exportTally()"
                     class="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded font-medium text-sm transition-colors">
                     Export Tally Vouchers (.CSV)
                 </button>
+                <button onclick="logout()"
+                    class="bg-red-100 hover:bg-red-200 text-red-800 px-4 py-2 rounded font-medium text-sm transition-colors border border-red-200">
+                    Logout
+                </button>
             </div>
-
         </div>
 
+        <!-- Admin Metrics (hidden for non-admin) -->
         <div id="admin-metrics" class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8 hidden">
             <div class="bg-white p-4 rounded border border-slate-200 shadow-sm">
                 <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Total Invoices</span>
@@ -54,11 +58,12 @@
             </div>
         </div>
 
+        <!-- User Quota (hidden for admin) -->
         <div id="user-quota" class="bg-white p-6 rounded border border-slate-200 shadow-sm mb-8 hidden">
             <div class="flex items-center justify-between">
                 <div>
                     <h2 class="text-lg font-semibold text-slate-800">Your Invoice Quota</h2>
-                    <p class="text-sm text-slate-500 mt-1">You have the following allocations remaining</p>
+                    <p class="text-sm text-slate-500 mt-1">Remaining allocations</p>
                 </div>
                 <div class="text-right">
                     <span class="text-4xl font-bold text-blue-600" id="invoices-left-display">0</span>
@@ -67,11 +72,12 @@
             </div>
         </div>
 
+        <!-- Upload Zone -->
         <div class="bg-white p-6 rounded border border-slate-200 shadow-sm">
             <h2 class="text-lg font-semibold text-slate-800 mb-4">Ingest Document Batch</h2>
             <div
                 class="border-2 border-dashed border-slate-200 rounded-lg p-8 text-center bg-slate-50 hover:bg-slate-100 transition-colors relative">
-                <input type="file" id="file-input" onchange="handleUpload(event)"
+                <input type="file" id="file-input" onchange="handleUpload(event)" multiple
                     class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
                 <div class="space-y-2">
                     <p id="upload-prompt" class="text-sm font-medium text-slate-700">Drag and drop files here, or click
@@ -84,31 +90,62 @@
     </div>
 
     <script>
-        const auditorId = "a0000000-0000-0000-0000-000000000000";
-        const clientId = "c0000000-0000-0000-0000-000000000000";
-        const currentUsername = localStorage.getItem('currentUsername') || 'guest';
-        const userInvoicesLeft = parseInt(localStorage.getItem('userInvoicesLeft')) || 0;
-        const isAdmin = localStorage.getItem('isAdmin') === 'true';
+        // ---------- Global State ----------
+        let currentUserId = localStorage.getItem('currentUserId');
+        let currentUsername = localStorage.getItem('currentUsername');
+        let isAdmin = localStorage.getItem('isAdmin') === 'true';
+        let clientId = localStorage.getItem('clientId');
+        let userInvoicesLeft = parseInt(localStorage.getItem('userInvoicesLeft')) || 0;
+        let currentBatchInvoiceIds = [];  // will store objects { invoiceId, appUserId }
 
-        // Enable multiple selection on the raw file input when the DOM loads
-        document.getElementById('file-input').setAttribute('multiple', 'true');
+        // Redirect to login if not authenticated
+        if (!currentUserId || !clientId) {
+            window.location.href = '/login';
+        }
 
-        // Initialize dashboard display based on user role
+        // ---------- Helper: Display user info ----------
+        function displayUserInfo() {
+            const infoEl = document.getElementById('user-info');
+            if (isAdmin) {
+                infoEl.textContent = `Admin: ${currentUsername} | Client: ${clientId.substring(0, 8)}...`;
+            } else {
+                infoEl.textContent = `User: ${currentUsername} | ${userInvoicesLeft} invoices remaining`;
+            }
+        }
+
+        // ---------- Dashboard Initialization ----------
         function initializeDashboard() {
             if (isAdmin) {
-                // Show admin metrics
                 document.getElementById('admin-metrics').classList.remove('hidden');
                 document.getElementById('user-quota').classList.add('hidden');
                 loadMetrics();
             } else {
-                // Show user quota
                 document.getElementById('admin-metrics').classList.add('hidden');
                 document.getElementById('user-quota').classList.remove('hidden');
                 document.getElementById('invoices-left-display').innerText = userInvoicesLeft;
             }
+            displayUserInfo();
         }
 
+        // Refresh quota from server (after batch processing)
+        async function refreshUserQuota() {
+            try {
+                const res = await fetch(`/api/user/quota`);
+                if (!res.ok) throw new Error('Failed to fetch quota');
+                const data = await res.json();
+                userInvoicesLeft = data.invoices_left;
+                localStorage.setItem('userInvoicesLeft', userInvoicesLeft);
+                document.getElementById('invoices-left-display').innerText = userInvoicesLeft;
+                displayUserInfo();
+            } catch (err) {
+                console.error("Quota refresh error:", err);
+            }
+        }
+
+        // Load admin metrics (only for auditor ID – you can replace with real auditorId)
         async function loadMetrics() {
+            // For demo, use a fixed auditorId – in production you'd get from user profile
+            const auditorId = "a0000000-0000-0000-0000-000000000000";
             try {
                 const res = await fetch(`/api/dashboard/metrics?auditorId=${auditorId}`);
                 const data = await res.json();
@@ -124,42 +161,33 @@
             }
         }
 
-        async function refreshUserQuota() {
-            try {
-                const res = await fetch(`/api/user/quota?username=${currentUsername}`);
-                const data = await res.json();
-                if (res.ok) {
-                    userInvoicesLeft = data.invoices_left;
-                    localStorage.setItem('userInvoicesLeft', userInvoicesLeft);
-                    document.getElementById('invoices-left-display').innerText = userInvoicesLeft;
-                    console.log(`✅ Quota refreshed: ${userInvoicesLeft} invoices left`);
-                }
-            } catch (err) {
-                console.error("Quota refresh error:", err);
-            }
-        }
-
+        // Export Tally CSV (uses global clientId)
         function exportTally() {
             window.open(`/api/export/tally?clientId=${clientId}`, '_blank');
         }
 
-        let currentBatchInvoiceIds = []; // Session tracking array variable
+        // Logout
+        function logout() {
+            localStorage.clear();
+            window.location.href = '/login';
+        }
 
+        // ---------- File Upload & Processing ----------
         async function handleUpload(event) {
             const files = Array.from(event.target.files);
             if (files.length === 0) return;
 
-            // Reset old state tracking contexts
             currentBatchInvoiceIds = [];
             document.getElementById('btn-json-export').classList.add('hidden');
-
             const statusBox = document.getElementById('status-box');
             statusBox.classList.remove('hidden');
             statusBox.innerHTML = `<div>🚀 Batch Processing Started for ${files.length} files...</div>`;
 
             try {
-                // Compress files before uploading
-                await processFilesForUpload(files);
+                // Step 1: compress large images
+                const optimizedFiles = await processFilesForUpload(files);
+                // Step 2: request presigned URLs and reserve quota
+                await uploadToPipeline(optimizedFiles);
             } catch (err) {
                 statusBox.innerHTML += `<div class="text-rose-500 font-bold">❌ Error: ${err.message}</div>`;
             }
@@ -167,7 +195,6 @@
 
         async function uploadToPipeline(optimizedFiles) {
             const statusBox = document.getElementById('status-box');
-            
             try {
                 const fileNames = optimizedFiles.map(f => f.name);
                 const initRes = await fetch('/api/upload/bulk-initiate', {
@@ -176,283 +203,168 @@
                     body: JSON.stringify({ files: fileNames, username: currentUsername })
                 });
                 const initData = await initRes.json();
+                // After initData is received
+                console.log("Batch init response:", initData);
+                currentBatchInvoiceIds = initData.batch
+                    .filter(item => item.status === 'success')
+                    .map(item => {
+                        console.log(`Item: ${item.fileName}, appUserId: ${item.appUserId}`);
+                        return { invoiceId: item.invoiceId, appUserId: item.appUserId };
+                    });
+                if (!initRes.ok) throw new Error(initData.error || initData.message || "Initiation failed");
 
-                if (!initRes.ok) {
-                    const errorData = await initRes.json();
-                    throw new Error(errorData.message || errorData.error || "Upload initiation failed");
-                }
+                // Store mapping: invoiceId + appUserId
+                currentBatchInvoiceIds = initData.batch
+                    .filter(item => item.status === 'success')
+                    .map(item => ({ invoiceId: item.invoiceId, appUserId: item.appUserId }));
 
+                // Upload each file to its presigned URL
                 const uploadPromises = initData.batch.map(async (item) => {
                     if (item.status === 'error') return;
-
-                    // Capture the invoice ID and appUserId for quota tracking
-                    currentBatchInvoiceIds.push(item.invoiceId);
-
                     const localFile = optimizedFiles.find(f => f.name === item.fileName);
-                    await fetch(item.uploadUrl, {
+                    if (!localFile) return;
+
+                    // PUT to presigned URL
+                    const uploadRes = await fetch(item.uploadUrl, {
                         method: 'PUT',
                         headers: { 'Authorization': `Bearer ${item.token}`, 'Content-Type': localFile.type },
                         body: localFile
                     });
+                    if (!uploadRes.ok) throw new Error(`Upload failed for ${item.fileName}`);
 
-                    const compRes = await fetch('/api/upload/complete', {
+                    // Notify completion – include appUserId
+                    const completeRes = await fetch('/api/upload/complete', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ invoiceId: item.invoiceId, clientId, storagePath: item.storagePath })
+                        body: JSON.stringify({
+                            invoiceId: item.invoiceId,
+                            clientId: clientId,
+                            storagePath: item.storagePath
+                        })
                     });
-                    const compData = await compRes.json();
+                    const compData = await completeRes.json();
                     statusBox.innerHTML += `<div class="text-emerald-400">✔ Queued: ${item.fileName}</div>`;
                 });
 
                 await Promise.all(uploadPromises);
-                statusBox.innerHTML += `<div class="text-white font-bold mt-2">🏁 Upload complete. Backend processing started...</div>`;
-                statusBox.innerHTML += `<div class="text-blue-300 mt-1">⏳ Waiting for background extraction (this may take a minute)...</div>`;
-
-                // Poll the backend to check if processing is complete
-                await waitForProcessingComplete(currentBatchInvoiceIds, statusBox);
-
+                statusBox.innerHTML += `<div class="text-white font-bold mt-2">🏁 Upload complete. Processing started...</div>`;
+                await waitForProcessingComplete(currentBatchInvoiceIds.map(i => i.invoiceId), statusBox);
             } catch (err) {
                 statusBox.innerHTML += `<div class="text-rose-500 font-bold">❌ Error: ${err.message}</div>`;
             }
         }
 
         async function waitForProcessingComplete(invoiceIds, statusBox) {
-            const maxAttempts = 60; // Max 5 minutes (60 * 5 seconds)
+            const maxAttempts = 60; // 5 minutes
             let attempts = 0;
-
             while (attempts < maxAttempts) {
                 try {
-                    // Check status of all invoices in this batch
                     const res = await fetch(`/api/invoices/status?ids=${invoiceIds.join(',')}`);
-                    
-                    if (!res.ok) {
-                        console.log(`Status check failed, retrying...`);
-                        attempts++;
-                        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
-                        continue;
-                    }
-
+                    if (!res.ok) throw new Error("Status check failed");
                     const data = await res.json();
-                    const allProcessed = data.invoices.every(inv => 
-                        inv.status === 'COMPLETED' || inv.status === 'FAILED'
-                    );
-
+                    const allProcessed = data.invoices.every(inv => inv.status === 'COMPLETED' || inv.status === 'FAILED');
                     if (allProcessed) {
                         const completed = data.invoices.filter(inv => inv.status === 'COMPLETED').length;
-                        const failed = data.invoices.filter(inv => inv.status === 'FAILED').length;
-                        console.log(`✅ Processing complete: ${completed} succeeded, ${failed} failed`);
                         statusBox.innerHTML += `<div class="text-slate-300">📊 ${completed}/${invoiceIds.length} invoices processed successfully</div>`;
-                        
-                        // Refresh user quota if not admin
-                        if (!isAdmin) {
-                            await refreshUserQuota();
-                        }
-                        
-                        // Reveal export button
+                        if (!isAdmin) await refreshUserQuota();
                         document.getElementById('btn-json-export').classList.remove('hidden');
-                        statusBox.innerHTML += `<div class="text-emerald-400 font-bold mt-2">✨ Processing complete! Export button is now enabled.</div>`;
-                        
-                        return; // Processing done!
+                        statusBox.innerHTML += `<div class="text-emerald-400 font-bold mt-2">✨ Processing complete! Export button enabled.</div>`;
+                        return;
                     }
-
-                    // Still processing, show progress
                     const completed = data.invoices.filter(inv => inv.status === 'COMPLETED').length;
                     statusBox.innerHTML = statusBox.innerHTML.replace(/⏳.*/, `⏳ Processing: ${completed}/${invoiceIds.length} invoices...`);
-                    
                     attempts++;
-                    await new Promise(resolve => setTimeout(resolve, 5000)); // Check every 5 seconds
-                } catch (error) {
-                    console.error(`Status polling error:`, error);
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                } catch (err) {
                     attempts++;
                     await new Promise(resolve => setTimeout(resolve, 5000));
                 }
             }
-
-            console.warn(`Processing timeout after ${attempts * 5} seconds`);
-            statusBox.innerHTML += `<div class="text-orange-400">⚠️ Processing taking longer than expected. You can still export available data.</div>`;
+            statusBox.innerHTML += `<div class="text-orange-400">⚠️ Processing timeout. You can still export available data.</div>`;
         }
 
-        async function processFilesForUpload(selectedFiles) {
-            const optimizedFiles = [];
-            const COMPRESSION_THRESHOLD = 100 * 1024; // 100 KB in bytes
-            const statusBox = document.getElementById('status-box');
-            
-            console.log(`🔍 Starting compression process for ${selectedFiles.length} file(s)...`);
-            statusBox.innerHTML += `<div class="text-blue-400">📦 Compression Analysis:</div>`;
-
-            for (const file of selectedFiles) {
-                try {
-                    const originalSizeKB = (file.size / 1024).toFixed(2);
-                    console.log(`Original size for ${file.name}: ${originalSizeKB} KB`);
-
-                    // Only compress if file is larger than threshold
-                    if (file.size > COMPRESSION_THRESHOLD) {
-                        console.log(`⚙️ Compressing ${file.name} (exceeds ${(COMPRESSION_THRESHOLD / 1024).toFixed(0)} KB threshold)...`);
-                        statusBox.innerHTML += `<div class="text-yellow-300">⚙️ Compressing: ${file.name}...</div>`;
-                        
-                        // Pass file through the compressor
-                        const processedBlob = await compressImage(file);
-                        const compressedSizeKB = (processedBlob.size / 1024).toFixed(2);
-
-                        // Use compressed version only if it's actually smaller
-                        if (processedBlob.size < file.size) {
-                            const compressionRatio = ((1 - processedBlob.size / file.size) * 100).toFixed(1);
-                            console.log(`✅ Compressed: ${file.name} → ${compressedSizeKB} KB (${compressionRatio}% reduction)`);
-                            statusBox.innerHTML += `<div class="text-emerald-400">✅ ${file.name}: ${originalSizeKB} KB → ${compressedSizeKB} KB (-${compressionRatio}%)</div>`;
-
-                            // Re-package as a File object to ensure compatibility with FormData or S3 loaders
-                            const finalFile = new File([processedBlob], processedBlob.name, {
-                                type: 'image/jpeg'
-                            });
-
-                            optimizedFiles.push(finalFile);
-                        } else {
-                            const expansionRatio = ((processedBlob.size / file.size - 1) * 100).toFixed(1);
-                            console.log(`⚠️ Compression ineffective for ${file.name}: ${originalSizeKB} KB → ${compressedSizeKB} KB (+${expansionRatio}%) - using original`);
-                            statusBox.innerHTML += `<div class="text-orange-400">⚠️ ${file.name}: Compression ineffective (+${expansionRatio}%) - using original</div>`;
-                            optimizedFiles.push(file);
-                        }
-                    } else {
-                        console.log(`⏭️ Skipping compression for ${file.name} (${originalSizeKB} KB < ${(COMPRESSION_THRESHOLD / 1024).toFixed(0)} KB threshold)`);
-                        statusBox.innerHTML += `<div class="text-slate-300">⏭️ Skipped: ${file.name} (${originalSizeKB} KB - under threshold)</div>`;
-                        optimizedFiles.push(file); // Use original file if under threshold
-                    }
-                } catch (error) {
-                    console.error(`❌ Compression error for ${file.name}:`, error);
-                    statusBox.innerHTML += `<div class="text-orange-400">⚠️ Error compressing ${file.name}, using original</div>`;
-                    optimizedFiles.push(file); // Fallback to raw file if compression hits a snag
+        // Client‑side compression (images only)
+        async function processFilesForUpload(files) {
+            const optimized = [];
+            const THRESHOLD = 100 * 1024;
+            for (const file of files) {
+                if (file.type.startsWith('image/') && file.size > THRESHOLD) {
+                    const compressed = await compressImage(file);
+                    optimized.push(compressed);
+                } else {
+                    optimized.push(file);
                 }
             }
-
-            console.log(`✨ Compression complete. Ready to upload ${optimizedFiles.length} file(s)`);
-            statusBox.innerHTML += `<div class="text-blue-300 mt-2">📤 Proceeding with upload...</div>`;
-
-            // Proceed with your original batch upload framework using the new 'optimizedFiles' array
-            await uploadToPipeline(optimizedFiles);
+            return optimized;
         }
 
-        // Triggers client-side browser file reconstruction from streaming blob content
+        function compressImage(file, maxWidth = 2000, maxHeight = 2000, quality = 0.6) {
+            return new Promise((resolve, reject) => {
+                if (!file.type.startsWith('image/')) return resolve(file);
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.src = e.target.result;
+                    img.onload = () => {
+                        let width = img.width, height = img.height;
+                        if (width > height && width > maxWidth) {
+                            height = (height * maxWidth) / width;
+                            width = maxWidth;
+                        } else if (height > maxHeight) {
+                            width = (width * maxHeight) / height;
+                            height = maxHeight;
+                        }
+                        const canvas = document.createElement('canvas');
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        canvas.toBlob(blob => {
+                            blob.name = file.name.replace(/\.[^/.]+$/, '') + '.jpg';
+                            resolve(blob);
+                        }, 'image/jpeg', quality);
+                    };
+                    img.onerror = reject;
+                };
+                reader.onerror = reject;
+            });
+        }
+
+        // Export batch JSON (uses stored invoice IDs)
         async function exportBatchJson() {
-            if (currentBatchInvoiceIds.length === 0) {
-                alert("No transaction batch context active in current UI memory loop.");
+            if (!currentBatchInvoiceIds.length) {
+                alert("No batch to export. Upload some files first.");
                 return;
             }
-
+            const invoiceIds = currentBatchInvoiceIds.map(i => i.invoiceId);
             try {
                 const res = await fetch('/api/export/json-batch', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ invoiceIds: currentBatchInvoiceIds })
+                    body: JSON.stringify({ invoiceIds })
                 });
-
                 if (!res.ok) {
-                    const errData = await res.json();
-                    alert(errData.error || "JSON compilation request rejected.");
+                    const err = await res.json();
+                    alert(err.error || "Export failed");
                     return;
                 }
-
-                const rawBlob = await res.blob();
-                const clientDownloadUrl = window.URL.createObjectURL(rawBlob);
-
-                const virtualAnchor = document.createElement('a');
-                virtualAnchor.href = clientDownloadUrl;
-                virtualAnchor.download = `SwiftSync_Batch_${Date.now()}.json`;
-                document.body.appendChild(virtualAnchor);
-                virtualAnchor.click();
-
-                virtualAnchor.remove();
-                window.URL.revokeObjectURL(clientDownloadUrl);
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `SwiftSync_Batch_${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
             } catch (err) {
-                console.error("Batch JSON transmission crash:", err);
+                console.error("Export error:", err);
+                alert("Export failed");
             }
         }
 
-        /**
- * Compresses an image file on the client side using Canvas.
- * @param {File} file - The original uploaded file.
- * @param {number} maxWidth - Max width boundary (default 2000px).
- * @param {number} maxHeight - Max height boundary (default 2000px).
- * @param {number} quality - JPEG compression quality (0.0 to 1.0, default 0.8).
- * @returns {Promise<Blob>} - Resolves to the compressed image Blob.
- */
-        function compressImage(file, maxWidth = 2000, maxHeight = 2000, quality = 0.6) {
-            return new Promise((resolve, reject) => {
-                // Only compress images. Pass through PDFs or other documents untouched.
-                if (!file.type.startsWith('image/')) {
-                    console.log(`📄 Non-image file detected: ${file.name} (${file.type}) - skipping compression`);
-                    return resolve(file);
-                }
-
-                console.log(`🖼️ Starting image compression for ${file.name}`);
-                console.log(`   Settings: maxWidth=${maxWidth}px, maxHeight=${maxHeight}px, quality=${quality}`);
-
-                const reader = new FileReader();
-                reader.readAsDataURL(file);
-
-                reader.onload = (event) => {
-                    const img = new Image();
-                    img.src = event.target.result;
-
-                    img.onload = () => {
-                        let width = img.width;
-                        let height = img.height;
-                        console.log(`📐 Original dimensions: ${width}x${height}px`);
-
-                        // Calculate new dimensions maintaining aspect ratio
-                        if (width > height) {
-                            if (width > maxWidth) {
-                                height = Math.round((height * maxWidth) / width);
-                                width = maxWidth;
-                            }
-                        } else {
-                            if (height > maxHeight) {
-                                width = Math.round((width * maxHeight) / height);
-                                height = maxHeight;
-                            }
-                        }
-                        console.log(`📏 Resized dimensions: ${width}x${height}px`);
-
-                        // Execute resizing using HTML5 Canvas
-                        const canvas = document.createElement('canvas');
-                        canvas.width = width;
-                        canvas.height = height;
-
-                        const ctx = canvas.getContext('2d');
-                        ctx.drawImage(img, 0, 0, width, height);
-
-                        // Export as optimized JPEG
-                        canvas.toBlob(
-                            (blob) => {
-                                if (!blob) {
-                                    return reject(new Error('Canvas image compression failed.'));
-                                }
-                                // Add filename properties back onto the blob so it works with upload flows
-                                blob.name = file.name.replace(/\.[^/.]+$/, "") + ".jpg";
-                                const savingsKB = ((file.size - blob.size) / 1024).toFixed(2);
-                                console.log(`💾 Canvas blob created: ${(blob.size / 1024).toFixed(2)} KB (saved ${savingsKB} KB)`);
-                                resolve(blob);
-                            },
-                            'image/jpeg',
-                            quality
-                        );
-                    };
-
-                    img.onerror = (err) => {
-                        console.error(`❌ Image load error for ${file.name}:`, err);
-                        reject(err);
-                    };
-                };
-
-                reader.onerror = (err) => {
-                    console.error(`❌ FileReader error for ${file.name}:`, err);
-                    reject(err);
-                };
-            });
-        }
-
+        // Start the dashboard
         initializeDashboard();
     </script>
-
 </body>
 
 </html>
