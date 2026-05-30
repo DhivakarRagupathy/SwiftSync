@@ -1,59 +1,48 @@
 import { createClient } from '@supabase/supabase-js';
 import { invoiceQueue } from './queue.js';
-import './queue.js';
 import 'dotenv/config';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-/**
- * Endpoint Step 1: Generates a temporary authorization pass for the client browser
- */
-export async function requestPresignedUpload(clientFileName, clientId) {
-  const invoiceId = crypto.randomUUID(); // Generate structural UUID up front
-  const extension = clientFileName.split('.').pop();
+export async function requestPresignedUpload(fileName, clientId, appUserId) {
+  const invoiceId = crypto.randomUUID();
+  const extension = fileName.split('.').pop();
   const storagePath = `tenant_${clientId}/${invoiceId}.${extension}`;
 
-  // Generate a signed upload token valid for 15 minutes
   const { data, error } = await supabase.storage
     .from('invoices')
     .createSignedUploadUrl(storagePath);
 
-  if (error) throw new Error(`Signed URL allocation aborted: ${error.message}`);
+  if (error) throw new Error(`Signed URL failed: ${error.message}`);
 
   return {
     invoiceId,
     storagePath,
     uploadUrl: data.signedUrl,
-    token: data.token // Needed by client SDK to validate storage write permissions
+    token: data.token,
+    appUserId   // pass back for frontend to store
   };
 }
 
-/**
- * Endpoint Step 2: Fired immediately after the client browser confirms the file hit cloud storage
- */
-export async function registerUploadComplete(invoiceId, clientId, storagePath) {
-  // 1. Log a real structural pending entry inside our PostgreSQL core
-  const { error } = await supabase
-    .from('invoices')
-    .insert({
-      id: invoiceId,
-      client_id: clientId,
-      storage_path: storagePath,
-      status: 'PENDING'
-    });
+export async function registerUploadComplete(invoiceId, clientId, storagePath, appUserId) {
+  const insertData = {
+    id: invoiceId,
+    client_id: clientId,
+    storage_path: storagePath,
+    status: 'PENDING'
+  };
+  if (appUserId && appUserId !== 'null' && appUserId !== 'undefined') {
+    insertData.app_user_id = appUserId;
+  } else {
+    console.warn(`No valid appUserId for invoice ${invoiceId}, skipping association`);
+  }
 
-  if (error) throw new Error(`Database registration failure: ${error.message}`);
+  const { error: insertError } = await supabase.from('invoices').insert(insertData);
+  if (insertError) throw new Error(`DB insert failed: ${insertError.message}`);
 
-  // 2. Dispatch the payload down to our BullMQ Redis background worker pool
   const job = await invoiceQueue.add(`invoice_process_${invoiceId}`, {
-    invoiceId,
-    clientId,
-    storagePath
-  }, {
-    attempts: 3,
-    backoff: 5000
-  });
+    invoiceId, clientId, storagePath, appUserId: appUserId || null
+  }, { attempts: 3, backoff: 5000 });
 
-  console.log(`[Enqueued] Web request transformed into background job: ${job.id}`);
   return { success: true, jobId: job.id };
 }
